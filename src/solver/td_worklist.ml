@@ -186,18 +186,20 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
           let y_ref = init y in
           if tracing then trace "sol_query" "entering query for %a; stable %b; called %b" S.Var.pretty_trace y !y_ref.stable !y_ref.called;
           get_var_event y;
+          (* As in td_parallel_base, infl is added before y is iterated: if y changes during its own iteration,
+             x is destabilized and evaluated again, which may narrow x if it is a widening point.
+             Adding it only afterwards saves these evaluations, but loses precision (e.g. tests/regression/53-races-mhp/12-lockset_inter_threaded_lock_transitive_racefree.c). *)
+          add_infl y x;
           if !y_ref.called then (
             if tracing && not !y_ref.wpoint then trace "wpoint" "query adding wpoint %a" S.Var.pretty_trace y;
-            y_ref := { !y_ref with wpoint = true };
-            add_infl y x
+            y_ref := { !y_ref with wpoint = true }
           ) else if !y_ref.stable then (
-            add_infl y x
+            ()
           ) else if is_global y then (
-            y_ref := { !y_ref with stable = true };
-            add_infl y x
+            y_ref := { !y_ref with stable = true }
           ) else (
             y_ref := { !y_ref with stable = true; called = true };
-            (* Infl is added at the end of iterate, so that changes of y during its own iteration do not destabilize x.  @@@ TODO: check *)
+            (* Destabilizing y during its iteration clears its infl, so iterate adds x again at its end. *)
             iterate (Some x) y
           );
           let tmp = !y_ref.value in
