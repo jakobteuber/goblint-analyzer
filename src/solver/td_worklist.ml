@@ -36,28 +36,6 @@ end
 (** A work list heuristic, for any kind of unknowns. *)
 module type WorkListHeuristic = functor (Var: VarType) -> WorkList with type elt = Var.t
 
-(** Set of unknowns that always returns the least unknown w.r.t. [Var.compare].
-    Being a set, it does not contain duplicates. *)
-module MinSet: WorkListHeuristic = functor (Var: VarType) ->
-struct
-  module VS = Set.Make (Var)
-
-  type elt = Var.t
-  type t = VS.t ref
-
-  let create () = ref VS.empty
-
-  let add w x = w := VS.add x !w
-
-  let choose w =
-    if VS.is_empty !w then
-      None
-    else (
-      let x = VS.min_elt !w in
-      w := VS.remove x !w;
-      Some x
-    )
-end
 
 module Lifo: WorkListHeuristic = functor (Var: VarType) ->
 struct
@@ -388,8 +366,6 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
   end
 
 let () =
-  Selector.add_solver ("td_worklist_min", 
-    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (MinSet))));
   Selector.add_solver ("td_worklist_lifo", 
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (Lifo))));
   Selector.add_solver ("td_worklist_fifo", 
