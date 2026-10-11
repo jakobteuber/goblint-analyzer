@@ -85,6 +85,12 @@ module Base : DemandEqSolver =
       (* This comes from domainslib *)
       let pool = Threadpool.create (nr_domains-1) in
 
+      (* Calls to query (~eval in td3) and iterate, as a proxy for how much work the solver does.
+         Logged at the end, in the format that scripts/solver_work.sh parses. *)
+      let eval_calls = Atomic.make 0 in
+      let iterate_calls = Atomic.make 0 in
+      let rhs_evals = Atomic.make 0 in (* evaluations of right-hand sides, comparable between solvers *)
+
       let data = CM.create ()
       in
 
@@ -109,7 +115,7 @@ module Base : DemandEqSolver =
         if tracing then trace "eq" "eq %a" S.Var.pretty_trace x;
         match S.system x with
         | None -> S.Dom.bot ()
-        | Some f -> f get set create
+        | Some f -> Atomic.incr rhs_evals; f get set create
       in
 
       (** Check if the unknown is a global. 
@@ -267,13 +273,16 @@ module Base : DemandEqSolver =
 
         (* begining of iteration to update the value for x *)
         start_iterate_event job_id;
+        Atomic.incr iterate_calls;
         assert (not @@ is_global x);
         let x_state = Atomic.get x_atom in
 
         if tracing then trace "iter" "%d iterate %a, stable: %b, wpoint: %b" job_id S.Var.pretty_trace x x_state.stable x_state.wpoint;
         let x_is_widening_point = x_state.wpoint in (* if x becomes a wpoint during eq, checking this will delay widening until next iterate *)
         (* eval_rhs_event job_id x; *)
-        let value_from_rhs = eq x (query x) (side x) (create x) in
+        (* Counted here instead of in query, as query repeats itself after a failed CAS. *)
+        let counted_query x y = Atomic.incr eval_calls; query x y in
+        let value_from_rhs = eq x (counted_query x) (side x) (create x) in
         let x_state = Atomic.get x_atom in
         let old_value = x_state.value in
         let new_value = (* value after box operator (if wp: widening) *)
@@ -375,6 +384,7 @@ module Base : DemandEqSolver =
       solver ();
       Threadpool.finished_with pool;
       solver_end_event ();
+      Logs.info "solver work: eval = %d, iterate = %d, rhs = %d" (Atomic.get eval_calls) (Atomic.get iterate_calls) (Atomic.get rhs_evals);
 
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or

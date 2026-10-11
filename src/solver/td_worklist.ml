@@ -86,6 +86,12 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
     let solve st vs =
       let (data : var_data ref HM.t) = HM.create 10 in
 
+      (** Calls to query (~eval in td3) and iterate, as a proxy for how much work the solver does.
+          Logged at the end, in the format that scripts/solver_work.sh parses. *)
+      let eval_calls = ref 0 in
+      let iterate_calls = ref 0 in
+      let rhs_evals = ref 0 in (* evaluations of right-hand sides, comparable between solvers *)
+
       (** Roots of the tasks that are waiting to be executed. *)
       let work = Work.create () in
 
@@ -136,7 +142,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
         if tracing then trace "eq" "eq %a" S.Var.pretty_trace x;
         match S.system x with
         | None -> S.Dom.bot ()
-        | Some f -> f get set create
+        | Some f -> incr rhs_evals; f get set create
       in
 
       (** Check if the unknown is a global. *)
@@ -176,6 +182,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
           @param x The unknown to solve for.
       *)
       let rec iterate orig x = (* ~(inner) solve in td3 *)
+        incr iterate_calls;
 
         (** Get the value for y, triggering an iteration if necessary, and performing a lookup otherwise.
             @param x The unknown whose query led to the query for y, so that the infl of y can be updated.
@@ -183,6 +190,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
             @return The value of y.
         *)
         let query x y = (* ~eval in td3 *)
+          incr eval_calls;
           let y_ref = init y in
           if tracing then trace "sol_query" "entering query for %a; stable %b; called %b" S.Var.pretty_trace y !y_ref.stable !y_ref.called;
           get_var_event y;
@@ -352,6 +360,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
 
       stop_event ();
+      Logs.info "solver work: eval = %d, iterate = %d, rhs = %d" !eval_calls !iterate_calls !rhs_evals;
       if Logs.Level.should_log Debug then (
         Logs.debug "Data after iterate completed";
         Logs.debug "|data|=%d" (HM.length data);

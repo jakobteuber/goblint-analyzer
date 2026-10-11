@@ -28,6 +28,12 @@ module Base : GenericEqSolver =
     let solve st vs =
       let (data : var_data ref HM.t) = HM.create 10 in
 
+      (* Calls to query (~eval in td3) and iterate, as a proxy for how much work the solver does.
+         Logged at the end, in the format that scripts/solver_work.sh parses. *)
+      let eval_calls = ref 0 in
+      let iterate_calls = ref 0 in
+      let rhs_evals = ref 0 in (* evaluations of right-hand sides, comparable between solvers *)
+
       print_solver_stats := (fun () ->
           Logs.debug "|data|=%d" (HM.length data);
         );
@@ -62,7 +68,7 @@ module Base : GenericEqSolver =
         if tracing then trace "eq" "eq %a" S.Var.pretty_trace x;
         match S.system x with
         | None -> S.Dom.bot ()
-        | Some f -> f get set
+        | Some f -> incr rhs_evals; f get set
       in
 
       let rec destabilize x =
@@ -79,6 +85,7 @@ module Base : GenericEqSolver =
       in
 
       let rec query x y =
+        incr eval_calls;
         let y_ref = init y in
         if tracing then trace "sol_query" "entering query for %a; stable %b; called %b" S.Var.pretty_trace y (!y_ref.stable) (!y_ref.called);
         get_var_event y;
@@ -122,6 +129,7 @@ module Base : GenericEqSolver =
         )
 
       and iterate x = (* ~(inner) solve in td3*)
+        incr iterate_calls;
 
         (* beginning of iterate*)
         let x_ref = init x in
@@ -201,6 +209,7 @@ module Base : GenericEqSolver =
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
 
       stop_event ();
+      Logs.info "solver work: eval = %d, iterate = %d, rhs = %d" !eval_calls !iterate_calls !rhs_evals;
       if Logs.Level.should_log Debug then (
         Logs.debug "Data after iterate completed";
         Logs.debug "|data|=%d" (HM.length data);

@@ -3,6 +3,7 @@
 
 - [`scripts/compare_solvers.sh`](./scripts/compare_solvers.sh) compares the precision of the solvers `td_simplified_ref`, `td_worklist_lifo`, `td_worklist_fifo` and `td_parallel_base` pairwise on all regression tests (or the test groups given as arguments) using Goblint's `comparesolver` option.
 The per-test counts are written to `tests/suite_result/compare_solvers/compare.csv` and summarized per pair at the end; see the script header for options such as `SOLVERS` and `JOBS`.
+- [`scripts/solver_work.sh`](./scripts/solver_work.sh) runs the solvers `td_simplified_ref`, `td_worklist_lifo`, `td_worklist_fifo` and `td_parallel_base` on the regression tests and reports how much work each does, measured by the right-hand side evaluations and the calls to eval and iterate that these solvers log; the per-test numbers are written to `tests/suite_result/solver_work/work.csv` and the report to `report.txt` next to it.
 
 
 ## Other
