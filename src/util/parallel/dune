@@ -18,3 +18,11 @@
    domain-local-await)
  (instrumentation (backend bisect_ppx))
  )
+
+; Without domainslib, the thread pool is mocked sequentially. Which mock is built in is chosen by an environment variable:
+; GOBLINT_THREADPOOL_MOCK=immediate (default) runs work when it is added, =lifo runs it later, most recently added first.
+; E.g.: GOBLINT_THREADPOOL_MOCK=lifo ./make.sh nat
+(rule
+ (target threadpool.no-domainslib.ml)
+ (deps threadpool.mock-immediate.ml threadpool.mock-lifo.ml)
+ (action (copy threadpool.mock-%{env:GOBLINT_THREADPOOL_MOCK=immediate}.ml %{target})))
