@@ -1,4 +1,11 @@
 # Goblint
+## Work-List Heuristics
+
+- [`scripts/compare_solvers.sh`](./scripts/compare_solvers.sh) compares the precision of the solvers `td_simplified_ref`, `td_worklist_lifo`, `td_worklist_fifo` and `td_parallel_base` pairwise on all regression tests (or the test groups given as arguments) using Goblint's `comparesolver` option.
+The per-test counts are written to `tests/suite_result/compare_solvers/compare.csv` and summarized per pair at the end; see the script header for options such as `SOLVERS` and `JOBS`.
+
+
+## Other
 [![GitHub release status](https://img.shields.io/github/v/release/goblint/analyzer)](https://github.com/goblint/analyzer/releases)
 [![opam package status](https://badgen.net/opam/v/goblint)](https://opam.ocaml.org/packages/goblint)
 [![Zenodo DOI](https://zenodo.org/badge/2066905.svg)](https://zenodo.org/badge/latestdoi/2066905)
