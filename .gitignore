@@ -106,3 +106,6 @@ site/
 *.coverage
 # bisect-ppx-report
 _coverage/*
+
+# SV-COMP benchmark programs (downloaded, see scripts/solver_work.sh)
+sv-benchmarks/

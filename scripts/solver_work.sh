@@ -5,8 +5,17 @@
 # Right-hand side evaluations are the most comparable between solvers: td_simplified_ref also calls iterate on stable unknowns,
 # where it returns immediately, while the other solvers only iterate unstable ones.
 #
-# Usage: ./scripts/solver_work.sh [group ...]
-#   group: regression test group directories to restrict to, e.g. 04-mutex (default: all of tests/regression)
+# Usage: ./scripts/solver_work.sh [group | task-directory ...]
+#   group:          regression test group directories to restrict to, e.g. 04-mutex (default: all of tests/regression)
+#   task-directory: a directory with SV-COMP task definitions (*.yml), e.g. sv-benchmarks/c/pthread.
+#                   Each task is run with $SVCOMP_CONF, the task's data model and the property $SVCOMP_PROPERTY.
+#                   The SV-COMP 2023 concurrency tasks can be downloaded (into the gitignored sv-benchmarks/) with:
+#                     git clone --depth 1 --branch svcomp23 --filter=blob:none --sparse \
+#                       https://gitlab.com/sosy-lab/benchmarking/sv-benchmarks.git sv-benchmarks
+#                     git -C sv-benchmarks sparse-checkout set c/properties c/pthread c/pthread-atomic c/pthread-ext \
+#                       c/pthread-wmm c/pthread-lit c/ldv-races c/ldv-linux-3.14-races c/pthread-complex \
+#                       c/pthread-driver-races c/pthread-C-DAC c/pthread-divine c/pthread-nondet c/goblint-regression \
+#                       c/weaver c/pthread-deagle
 #
 # Environment variables:
 #   SOLVERS  solvers to run (from those above), the first one is the baseline of the report
@@ -16,6 +25,8 @@
 #   TIMEOUT  seconds per run, i.e. per test and solver (default: 120)
 #   OUT      output directory (default: tests/suite_result/solver_work)
 #   gobopt   extra Goblint options, appended after the test's PARAM
+#   SVCOMP_CONF      configuration for SV-COMP tasks (default: conf/svcomp23.json)
+#   SVCOMP_PROPERTY  property file for SV-COMP tasks, relative to the task directory (default: ../properties/no-data-race.prp)
 #
 # Output:
 #   $OUT/work.csv     one row per test and solver: status (ok, timeout, error), eval and iterate calls, right-hand side evaluations
@@ -30,6 +41,8 @@ TIMEOUT=${TIMEOUT:-120}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$(realpath -m "${OUT:-$ROOT/tests/suite_result/solver_work}")
 GOBLINT="$ROOT/goblint"
+SVCOMP_CONF=$(realpath "${SVCOMP_CONF:-$ROOT/conf/svcomp23.json}")
+SVCOMP_PROPERTY=${SVCOMP_PROPERTY:-../properties/no-data-race.prp}
 
 if [ ! -x "$GOBLINT" ]; then
   echo "Goblint not found at $GOBLINT, build it with ./make.sh nat first." >&2
@@ -48,6 +61,12 @@ mkdir -p "$OUT/logs" "$OUT/rows" "$OUT/goblint-dirs"
 # Tests are discovered like update_suite.rb does: files NN-*.c, without SKIP (or kernel, if the headers are missing) in the first line.
 TESTS=()
 for group in "${GROUPS_[@]}"; do
+  if [ -d "$group" ] && compgen -G "$group/*.yml" > /dev/null; then
+    for f in "$group"/*.yml; do
+      TESTS+=("$(realpath "$f")")
+    done
+    continue
+  fi
   for f in "$ROOT"/tests/regression/"$group"/[0-9][0-9]-*.c; do
     [ -e "$f" ] || continue
     first=$(head -n 1 "$f")
@@ -64,15 +83,26 @@ echo "Running ${#SOLVERS[@]} solver(s) on ${#TESTS[@]} tests with $JOBS jobs, re
 run_one() {
   local file=$1 solver=$2
   local group test id log params status work
+  local input arch
   group=$(basename "$(dirname "$file")")
-  test=$(basename "$file" .c)
+  if [[ $file == *.yml ]]; then
+    # SV-COMP task: analyze its input file with the SV-COMP configuration, for the task's data model.
+    test=$(basename "$file" .yml)
+    input=$(grep -oP "^input_files: *'?\K[^' ]+" "$file" | head -n 1)
+    arch=32bit
+    grep -q "data_model: *LP64" "$file" && arch=64bit
+    params="--conf $SVCOMP_CONF --set ana.specification $SVCOMP_PROPERTY --set exp.architecture $arch"
+  else
+    test=$(basename "$file" .c)
+    input=$(basename "$file")
+    params=$(head -n 1 "$file" | grep -oP "PARAM: \K.*")
+  fi
   id="$group/$test"
   log="$OUT/logs/$group-$test.$solver.log"
-  params=$(head -n 1 "$file" | grep -oP "PARAM: \K.*")
 
   # PARAMs may refer to files relative to the test, so run in the test's directory (as update_suite.rb does).
   (cd "$(dirname "$file")" &&
-    eval timeout "$TIMEOUT" "$GOBLINT" "$(basename "$file")" "$params" \
+    eval timeout "$TIMEOUT" "$GOBLINT" "$input" "$params" \
       --set solver "$solver" \
       --set goblint-dir "$OUT/goblint-dirs/$group-$test.$solver" "${gobopt:-}") > "$log" 2>&1
   local exit_code=$?
@@ -90,7 +120,7 @@ run_one() {
   echo "$id,$solver,$status,$work" > "$OUT/rows/$group-$test.$solver.csv"
 }
 export -f run_one
-export OUT TIMEOUT GOBLINT
+export OUT TIMEOUT GOBLINT SVCOMP_CONF SVCOMP_PROPERTY
 export gobopt="${gobopt:-}"
 
 for f in "${TESTS[@]}"; do
