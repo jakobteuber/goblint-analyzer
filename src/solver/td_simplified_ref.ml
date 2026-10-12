@@ -146,7 +146,7 @@ module Base : GenericEqSolver =
               if M.tracing then M.trace "wpoint" "widen %a" S.Var.pretty_trace x;
               box old eqd)
           in
-          if not (Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old wpd) ()) then (
+          if not (S.Dom.equal old wpd) then (
             (* old != wpd *)
             if tracing && not (S.Dom.is_bot old) && !x_ref.wpoint then trace "solchange" "%a (wpx: %b): %a" S.Var.pretty_trace x (!x_ref.wpoint) S.Dom.pretty_diff (wpd, old);
             update_var_event x old wpd;
@@ -203,7 +203,7 @@ module Base : GenericEqSolver =
           solver ();
         )
       in
-      solver ();
+      Timing.wrap "solve" solver ();
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)

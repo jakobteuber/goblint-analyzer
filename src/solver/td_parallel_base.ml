@@ -381,7 +381,8 @@ module Base : DemandEqSolver =
           solver ();
         )
       in
-      solver ();
+      (* With domainslib, the timing tree is not synchronized between domains. *)
+      Timing.wrap "solve" solver ();
       Threadpool.finished_with pool;
       solver_end_event ();
       Logs.info "solver work: eval = %d, iterate = %d, rhs = %d" (Atomic.get eval_calls) (Atomic.get iterate_calls) (Atomic.get rhs_evals);

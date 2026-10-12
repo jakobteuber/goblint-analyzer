@@ -280,7 +280,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
             if tracing then trace "wpoint" "box widening %a" S.Var.pretty_trace x;
             box old_value value_from_rhs)
         in
-        if Timing.wrap "S.Dom.equal" (fun () -> S.Dom.equal old_value new_value) () then (
+        if S.Dom.equal old_value new_value then (
           (* this makes e.g. nested loops precise, ex. tests/regression/34-localization/01-nested.c - if we do not remove wpoint, the inner loop head will stay a wpoint and widen the outer loop variable. *)
           finalize ~remove_wpoint:true
         ) else (
@@ -354,7 +354,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
           solver ();
         )
       in
-      solver ();
+      Timing.wrap "solve" solver ();
       (* After termination, only those variables are stable which are
        * - reachable from any of the queried variables vs, or
        * - effected by side-effects and have no constraints on their own (this should be the case for all of our analyses). *)
