@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Compare the precision of solvers pairwise (via Goblint's `comparesolver` option) on all regression tests.
 #
-# Usage: ./scripts/compare_solvers.sh [group ...]
-#   group: regression test group directories to restrict to, e.g. 04-mutex (default: all of tests/regression)
+# Usage: ./scripts/compare_solvers.sh [group | task-directory ...]
+#   group:          regression test group directories to restrict to, e.g. 04-mutex (default: all of tests/regression)
+#   task-directory: a directory with SV-COMP task definitions (*.yml), e.g. sv-benchmarks/c/pthread,
+#                   see scripts/solver_work.sh for downloading them.
+#                   Each task is run with $SVCOMP_CONF, the task's data model and the property $SVCOMP_PROPERTY.
 #
 # Environment variables:
 #   SOLVERS  solvers to compare, every pair is compared once (default: "td_simplified_ref td_worklist_lifo td_worklist_fifo td_parallel_base")
@@ -10,6 +13,9 @@
 #   TIMEOUT  seconds per run, i.e. per test and pair of solvers (default: 120)
 #   OUT      output directory (default: tests/suite_result/compare_solvers)
 #   gobopt   extra Goblint options, appended after the test's PARAM
+#   GOBLINT  Goblint binary (default: ./goblint), e.g. a copy built with another thread pool mock
+#   SVCOMP_CONF      configuration for SV-COMP tasks (default: conf/svcomp23.json)
+#   SVCOMP_PROPERTY  property file for SV-COMP tasks, relative to the task directory (default: ../properties/no-data-race.prp)
 #
 # Output:
 #   $OUT/compare.csv   one row per test and pair; "left" is the first solver of the pair, "right" the second.
@@ -28,7 +34,9 @@ JOBS=${JOBS:-$(nproc)}
 TIMEOUT=${TIMEOUT:-120}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$(realpath -m "${OUT:-$ROOT/tests/suite_result/compare_solvers}")
-GOBLINT="$ROOT/goblint"
+GOBLINT=$(realpath "${GOBLINT:-$ROOT/goblint}")
+SVCOMP_CONF=$(realpath "${SVCOMP_CONF:-$ROOT/conf/svcomp23.json}")
+SVCOMP_PROPERTY=${SVCOMP_PROPERTY:-../properties/no-data-race.prp}
 
 if [ ! -x "$GOBLINT" ]; then
   echo "Goblint not found at $GOBLINT, build it with ./make.sh nat first." >&2
@@ -47,6 +55,12 @@ mkdir -p "$OUT/logs" "$OUT/rows" "$OUT/goblint-dirs"
 # Tests are discovered like update_suite.rb does: files NN-*.c, without SKIP (or kernel, if the headers are missing) in the first line.
 TESTS=()
 for group in "${GROUPS_[@]}"; do
+  if [ -d "$group" ] && compgen -G "$group/*.yml" > /dev/null; then
+    for f in "$group"/*.yml; do
+      TESTS+=("$(realpath "$f")")
+    done
+    continue
+  fi
   for f in "$ROOT"/tests/regression/"$group"/[0-9][0-9]-*.c; do
     [ -e "$f" ] || continue
     first=$(head -n 1 "$f")
@@ -70,15 +84,26 @@ echo "Comparing ${#PAIRS[@]} pair(s) of solvers on ${#TESTS[@]} tests with $JOBS
 run_one() {
   local file=$1 left=$2 right=$3
   local group test id log params status numbers warn_only
+  local input arch
   group=$(basename "$(dirname "$file")")
-  test=$(basename "$file" .c)
+  if [[ $file == *.yml ]]; then
+    # SV-COMP task: analyze its input file with the SV-COMP configuration, for the task's data model.
+    test=$(basename "$file" .yml)
+    input=$(grep -oP "^input_files: *'?\K[^' ]+" "$file" | head -n 1)
+    arch=32bit
+    grep -q "data_model: *LP64" "$file" && arch=64bit
+    params="--conf $SVCOMP_CONF --set ana.specification $SVCOMP_PROPERTY --set exp.architecture $arch"
+  else
+    test=$(basename "$file" .c)
+    input=$(basename "$file")
+    params=$(head -n 1 "$file" | grep -oP "PARAM: \K.*")
+  fi
   id="$group/$test"
   log="$OUT/logs/$group-$test.$left.$right.log"
-  params=$(head -n 1 "$file" | grep -oP "PARAM: \K.*")
 
   # PARAMs may refer to files relative to the test, so run in the test's directory (as update_suite.rb does).
   (cd "$(dirname "$file")" &&
-    eval timeout "$TIMEOUT" "$GOBLINT" "$(basename "$file")" "$params" \
+    eval timeout "$TIMEOUT" "$GOBLINT" "$input" "$params" \
       --set solver "$left" --set comparesolver "$right" \
       --set goblint-dir "$OUT/goblint-dirs/$group-$test.$left.$right" \
       --enable dbg.compare_runs.diff "${gobopt:-}") > "$log" 2>&1
@@ -107,7 +132,7 @@ run_one() {
   echo "$id,$left,$right,$status,$numbers" > "$OUT/rows/$group-$test.$left.$right.csv"
 }
 export -f run_one
-export OUT TIMEOUT GOBLINT
+export OUT TIMEOUT GOBLINT SVCOMP_CONF SVCOMP_PROPERTY
 export gobopt="${gobopt:-}"
 
 for f in "${TESTS[@]}"; do

@@ -25,6 +25,7 @@
 #   TIMEOUT  seconds per run, i.e. per test and solver (default: 120)
 #   OUT      output directory (default: tests/suite_result/solver_work)
 #   gobopt   extra Goblint options, appended after the test's PARAM
+#   GOBLINT  Goblint binary (default: ./goblint), e.g. a copy built with another thread pool mock
 #   SVCOMP_CONF      configuration for SV-COMP tasks (default: conf/svcomp23.json)
 #   SVCOMP_PROPERTY  property file for SV-COMP tasks, relative to the task directory (default: ../properties/no-data-race.prp)
 #
@@ -40,7 +41,7 @@ JOBS=${JOBS:-$(nproc)}
 TIMEOUT=${TIMEOUT:-120}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$(realpath -m "${OUT:-$ROOT/tests/suite_result/solver_work}")
-GOBLINT="$ROOT/goblint"
+GOBLINT=$(realpath "${GOBLINT:-$ROOT/goblint}")
 SVCOMP_CONF=$(realpath "${SVCOMP_CONF:-$ROOT/conf/svcomp23.json}")
 SVCOMP_PROPERTY=${SVCOMP_PROPERTY:-../properties/no-data-race.prp}
 
