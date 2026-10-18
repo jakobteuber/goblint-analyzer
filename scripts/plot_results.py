@@ -33,9 +33,10 @@ SOLVER_COLORS = {
     "td_worklist_lifo": "#2a78d6",  # blue
     "td_worklist_fifo": "#eb6834",  # orange
     "td_parallel_base": "#1baf7a",  # aqua
+    "td_worklist_random": "#eda100",  # yellow
     BASELINE: "#898781",  # gray
 }
-EXTRA_COLORS = ["#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]  # further slots, for other solvers
+EXTRA_COLORS = ["#e87ba4", "#008300", "#6250d6", "#e34948"]  # further slots, for other solvers
 INK = "#0b0b0b"
 INK_SECONDARY = "#52514e"
 INK_MUTED = "#898781"

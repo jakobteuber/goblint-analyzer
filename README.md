@@ -1,6 +1,9 @@
 # Goblint
 ## Work-List Heuristics
 
+The solver `td_worklist` executes its tasks in LIFO (`td_worklist_lifo`), FIFO (`td_worklist_fifo`) or random order (`td_worklist_random`); the random order is seeded differently in each run and the seed is logged with `-v`.
+None of the scripts below runs `td_worklist_random` by default; add it with `SOLVERS`.
+
 - [`scripts/compare_solvers.sh`](./scripts/compare_solvers.sh) compares the precision of the solvers `td_simplified_ref`, `td_worklist_lifo`, `td_worklist_fifo` and `td_parallel_base` pairwise on all regression tests (or the test groups or SV-COMP task directories given as arguments) using Goblint's `comparesolver` option.
 The per-test counts are written to `tests/suite_result/compare_solvers/compare.csv` and summarized per pair at the end; see the script header for options such as `SOLVERS` and `JOBS`.
 - [`scripts/solver_work.sh`](./scripts/solver_work.sh) runs the solvers `td_simplified_ref`, `td_worklist_lifo`, `td_worklist_fifo` and `td_parallel_base` on the regression tests and reports how much work each does, measured by the right-hand side evaluations and the calls to eval and iterate that these solvers log; the per-test numbers are written to `tests/suite_result/solver_work/work.csv` and the report to `report.txt` next to it.

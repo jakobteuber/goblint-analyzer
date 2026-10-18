@@ -63,6 +63,33 @@ struct
   let choose = Queue.take_opt
 end
 
+(** Chooses a uniformly random element, with a different seed in each run. *)
+module Random: WorkListHeuristic = functor (Var: VarType) ->
+struct
+  type elt = Var.t
+  type t = { elems: Var.t DynArray.t; rand: Random.State.t }
+
+  let create () =
+    (* The seed is logged, so that an ordering can be traced back to its run. *)
+    let seed = Random.State.bits (Random.State.make_self_init ()) in
+    Logs.info "td_worklist_random: seed = %d" seed;
+    { elems = DynArray.create (); rand = Random.State.make [|seed|] }
+
+  let add w x = DynArray.add w.elems x
+
+  let choose w =
+    let n = DynArray.length w.elems in
+    if n = 0 then
+      None
+    else (
+      let i = Random.State.int w.rand n in
+      let x = DynArray.get w.elems i in
+      DynArray.set w.elems i (DynArray.last w.elems);
+      DynArray.delete_last w.elems;
+      Some x
+    )
+end
+
 (** @param WL The heuristic that decides in which order the tasks are executed. *)
 module Base (WL: WorkListHeuristic) : DemandEqSolver =
   functor (S: DemandEqConstrSys) ->
@@ -381,3 +408,5 @@ let () =
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (Lifo))));
   Selector.add_solver ("td_worklist_fifo", 
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (Fifo))));
+  Selector.add_solver ("td_worklist_random",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (Random))));
