@@ -23,8 +23,9 @@ sig
       @@@ duplicates can be removed but need not?
       @param w The work list.
       @param x The element to add.
+      @param invalidations How often the value of x has been invalidated so far.
   *)
-  val add: t -> elt -> unit
+  val add: t -> elt -> invalidations:int -> unit
 
   (** Remove the next element from the work list.
       @param w The work list.
@@ -44,7 +45,7 @@ struct
 
   let create () = Stack.create ()
 
-  let add w x = Stack.push x w
+  let add w x ~invalidations:_ = Stack.push x w
 
   let choose w =
     if Stack.is_empty w then
@@ -59,7 +60,7 @@ struct
   type t = Var.t Queue.t
 
   let create () = Queue.create ()
-  let add w x = Queue.push x w
+  let add w x ~invalidations:_ = Queue.push x w
   let choose = Queue.take_opt
 end
 
@@ -75,7 +76,7 @@ struct
     Logs.info "td_worklist_random: seed = %d" seed;
     { elems = DynArray.create (); rand = Random.State.make [|seed|] }
 
-  let add w x = DynArray.add w.elems x
+  let add w x ~invalidations:_ = DynArray.add w.elems x
 
   let choose w =
     let n = DynArray.length w.elems in
@@ -89,6 +90,30 @@ struct
       Some x
     )
 end
+
+(** Chooses an element with the most ([most = true]) or least ([most = false]) invalidations,
+    counted when it was added. Ties are broken in LIFO order. *)
+module ByInvalidations (P: sig val most: bool end): WorkListHeuristic = functor (Var: VarType) ->
+struct
+  type elt = Var.t
+  (** Elements by their number of invalidations; buckets are never empty. *)
+  type t = Var.t list Map.Int.t ref
+
+  let create () = ref Map.Int.empty
+
+  let add w x ~invalidations =
+    w := Map.Int.modify_def [] invalidations (List.cons x) !w
+
+  let choose w =
+    match (if P.most then Map.Int.max_binding_opt else Map.Int.min_binding_opt) !w with
+    | None -> None
+    | Some (_, []) -> assert false
+    | Some (n, [x]) -> w := Map.Int.remove n !w; Some x
+    | Some (n, x :: xs) -> w := Map.Int.add n xs !w; Some x
+end
+
+module MostInvalidated = ByInvalidations (struct let most = true end)
+module LeastInvalidated = ByInvalidations (struct let most = false end)
 
 (** @param WL The heuristic that decides in which order the tasks are executed. *)
 module Base (WL: WorkListHeuristic) : DemandEqSolver =
@@ -108,6 +133,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
       stable: bool;    (** Unknown is stable, i.e. its value is known unless its dependencies change *)
       called: bool;    (** Unknown is currently being solved *)
       top_level: bool; (** Unknown is the root of a solver task *)
+      invalidations: int; (** How often the unknown has been destabilized *)
     }
 
     let solve st vs =
@@ -143,6 +169,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
               stable = false;
               called = false;
               top_level = false;
+              invalidations = 0;
             } in
           HM.replace data x x_ref;
           x_ref
@@ -178,7 +205,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
       (** Add a task to solve for y to the work list. *)
       let add_task y =
         if tracing then trace "create" "add_task %a" S.Var.pretty_trace y;
-        Work.add work y
+        Work.add work y ~invalidations:!(init y).invalidations
       in
 
       (** Destabilizes the unknowns in w and their infl recursively.
@@ -193,11 +220,11 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
             ) else if !y_ref.called then (
               (* If y is called, we do not need to destabilize its infl, as it will happen after the value change anyway. *)
               if tracing then trace "destab" "stable remove %a (top_level:%b, called:%b)" S.Var.pretty_trace y !y_ref.top_level !y_ref.called;
-              y_ref := { !y_ref with stable = false };
+              y_ref := { !y_ref with stable = false; invalidations = !y_ref.invalidations + 1 };
             ) else (
               let inner_w = !y_ref.infl in
               if tracing then trace "destab" "stable remove %a (top_level:%b, called:%b)" S.Var.pretty_trace y !y_ref.top_level !y_ref.called;
-              y_ref := { !y_ref with stable = false; infl = VS.empty };
+              y_ref := { !y_ref with stable = false; infl = VS.empty; invalidations = !y_ref.invalidations + 1 };
               if !y_ref.top_level then add_task y;
               destabilize inner_w
             )
@@ -410,3 +437,7 @@ let () =
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (Fifo))));
   Selector.add_solver ("td_worklist_random",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (Random))));
+  Selector.add_solver ("td_worklist_most_invalidated",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (MostInvalidated))));
+  Selector.add_solver ("td_worklist_least_invalidated",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (LeastInvalidated))));
