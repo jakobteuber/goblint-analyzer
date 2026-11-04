@@ -431,6 +431,11 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
   end
 
 let () =
+  (* Differences from td_parallel_base with LIFO mock: 
+   *    - td_parallel_base re-runs roots that are stable
+   *    - td_parallel_base sorts top-level roots by Saturn hash order,
+   *      we walk the VS set
+   *)
   Selector.add_solver ("td_worklist_lifo", 
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (Lifo))));
   Selector.add_solver ("td_worklist_fifo", 

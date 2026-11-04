@@ -182,6 +182,8 @@ module Base : DemandEqSolver =
           if tracing then trace "create" "create_task %a" S.Var.pretty_trace y;
           (* Here a failure can be ignored, as it is very rare and
              a missing entry causes recalculation, not a unsound result. *)
+          (* →Ali: Should this be try_add? This updates an existing binding
+           *  after checking that none exists  *)
           Htbl.try_set unknowns_with_running_jobs y () |> ignore;
           outer_prom := Threadpool.add_work pool work_fun :: (!outer_prom)
         )
