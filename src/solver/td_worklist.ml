@@ -20,13 +20,22 @@ type info = {
                           Only collected if [need_cost], 0 otherwise. *)
 }
 
-(** The fields of [info] that are only collected if the heuristic needs them. *)
+(** The data that is only collected if the heuristic needs it: fields of [info] and of [context]. *)
 type needs = {
   need_depth: bool;
   need_cost: bool;
+  need_dependencies: bool;
 }
 
-let needs_nothing = { need_depth = false; need_cost = false }
+let needs_nothing = { need_depth = false; need_cost = false; need_dependencies = false }
+
+(** What the solver knows about the dependencies between roots, for heuristics that need more than [info].
+    It may change between calls of [choose]. *)
+type 'v context = {
+  consumers: 'v -> 'v list;
+  (** Roots whose tasks have read a global that the task of the given root has written, without the root itself.
+      Only collected if [need_dependencies], [] otherwise. *)
+}
 
 (** Work list of root unknowns of solver tasks. *)
 module type WorkList =
@@ -34,10 +43,10 @@ sig
   type elt
   type t
 
-  (** Which data the solver has to collect for [add]. *)
+  (** Which data the solver has to collect for [add] and the context. *)
   val needs: needs
 
-  val create: unit -> t
+  val create: elt context -> t
 
   (** Add an element to the work list.
       @@@ duplicates can be removed but need not?
@@ -64,7 +73,7 @@ struct
   type t = Var.t Stack.t
 
   let needs = needs_nothing
-  let create () = Stack.create ()
+  let create _ = Stack.create ()
 
   let add w x _ = Stack.push x w
 
@@ -81,7 +90,7 @@ struct
   type t = Var.t Queue.t
 
   let needs = needs_nothing
-  let create () = Queue.create ()
+  let create _ = Queue.create ()
   let add w x _ = Queue.push x w
   let choose = Queue.take_opt
 end
@@ -94,7 +103,7 @@ struct
 
   let needs = needs_nothing
 
-  let create () =
+  let create _ =
     (* The seed is logged, so that an ordering can be traced back to its run. *)
     let seed = Random.State.bits (Random.State.make_self_init ()) in
     Logs.info "td_worklist_random: seed = %d" seed;
@@ -125,7 +134,7 @@ struct
   type t = Var.t list Map.Int.t ref
 
   let needs = P.needs
-  let create () = ref Map.Int.empty
+  let create _ = ref Map.Int.empty
 
   let add w x info =
     w := Map.Int.modify_def [] (P.key info) (List.cons x) !w
@@ -146,6 +155,73 @@ module ShallowestCreated = ByKey (struct let key i = i.depth let most = false le
 
 (** Roots whose last task was cheapest first; roots that have not run yet count as cost 0. *)
 module CheapestFirst = ByKey (struct let key i = i.last_cost let most = false let needs = { needs_nothing with need_cost = true } end)
+
+(** Producers before consumers: chooses a waiting root that no other waiting root can reach in the graph of
+    [context.consumers], unless they reach each other (they are in the same cycle). Such a root always exists,
+    as "reaches, but is not reached back" is a strict partial order. Ties are broken in FIFO order.
+    A root that is added while it is already waiting keeps its position.
+    Each choose costs O(n * (r + e)) for n waiting roots, r roots and e edges in the graph:
+    fine for the few roots of thread creations, but a lot for programs with many roots. *)
+module ProducersFirst: WorkListHeuristic = functor (Var: VarType) ->
+struct
+  module VH = Hashtbl.Make (Var)
+  type elt = Var.t
+  type t = {
+    waiting: Var.t DynArray.t; (** In the order in which they were added *)
+    is_waiting: unit VH.t;
+    context: Var.t context;
+  }
+
+  let needs = { needs_nothing with need_dependencies = true }
+  let create context = { waiting = DynArray.create (); is_waiting = VH.create 10; context }
+
+  let add w x _ =
+    if not (VH.mem w.is_waiting x) then (
+      VH.replace w.is_waiting x ();
+      DynArray.add w.waiting x
+    )
+
+  (** The roots that can be reached from x via at least one edge. *)
+  let reachable w x =
+    let seen = VH.create 10 in
+    let rec visit y =
+      List.iter (fun z ->
+          if not (VH.mem seen z) then (
+            VH.replace seen z ();
+            visit z
+          )
+        ) (w.context.consumers y)
+    in
+    visit x;
+    seen
+
+  let choose w =
+    let n = DynArray.length w.waiting in
+    if n = 0 then
+      None
+    else (
+      let reach = Array.init n (fun i -> reachable w (DynArray.get w.waiting i)) in
+      (* Whether another waiting root reaches root i, but i does not reach it back. *)
+      let produced_by_other i =
+        let x = DynArray.get w.waiting i in
+        let rec check j =
+          j < n && (
+            (j <> i && VH.mem reach.(j) x && not (VH.mem reach.(i) (DynArray.get w.waiting j)))
+            || check (j + 1))
+        in
+        check 0
+      in
+      (* Never runs past the end, as one of the roots is not produced by any other. *)
+      let rec first i =
+        if i = n - 1 || not (produced_by_other i) then i else first (i + 1)
+      in
+      let i = first 0 in
+      let x = DynArray.get w.waiting i in
+      DynArray.delete w.waiting i;
+      VH.remove w.is_waiting x;
+      Some x
+    )
+end
 
 (** @param WL The heuristic that decides in which order the tasks are executed. *)
 module Base (WL: WorkListHeuristic) : DemandEqSolver =
@@ -177,13 +253,27 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
       let iterate_calls = ref 0 in
       let rhs_evals = ref 0 in (* evaluations of right-hand sides, comparable between solvers *)
 
-      (** Roots of the tasks that are waiting to be executed. *)
-      let work = Work.create () in
-
-      (* Data for the work list heuristics, see [info] *)
+      (* Data for the work list heuristics, see [info] and [context] *)
       let current_root = ref None in (* Root of the task that is currently executed *)
       let depths : int HM.t = HM.create 10 in (* Creation depth of each root *)
       let costs : int HM.t = HM.create 10 in (* Right-hand side evaluations of the last task of each root *)
+      (* Dependencies are guarded by need_dependencies: they cost hash table updates on every side effect and query. *)
+      let writes : VS.t HM.t = HM.create 10 in (* Globals written by the tasks of each root *)
+      let readers : VS.t HM.t = HM.create 10 in (* Roots whose tasks read each global *)
+
+      (* Only called inside a task, so there is a current root. *)
+      let record_access table key value =
+        HM.replace table key (VS.add value (HM.find_default table key VS.empty))
+      in
+      let record_write g = record_access writes (Option.get !current_root) g in
+      let record_read g = record_access readers g (Option.get !current_root) in
+      let consumers r =
+        let rs = VS.fold (fun g acc -> VS.union (HM.find_default readers g VS.empty) acc) (HM.find_default writes r VS.empty) VS.empty in
+        VS.elements (VS.remove r rs)
+      in
+
+      (** Roots of the tasks that are waiting to be executed. *)
+      let work = Work.create { consumers } in
 
       print_solver_stats := (fun () ->
           Logs.debug "|data|=%d" (HM.length data);
@@ -302,6 +392,8 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
              x is destabilized and evaluated again, which may narrow x if it is a widening point.
              Adding it only afterwards saves these evaluations, but loses precision (e.g. tests/regression/53-races-mhp/12-lockset_inter_threaded_lock_transitive_racefree.c). *)
           add_infl y x;
+          (* Only globals connect tasks: locals that another root's task solved are not recorded. *)
+          if Work.needs.need_dependencies && is_global y then record_read y;
           if !y_ref.called then (
             if tracing && not !y_ref.wpoint then trace "wpoint" "query adding wpoint %a" S.Var.pretty_trace y;
             y_ref := { !y_ref with wpoint = true }
@@ -326,6 +418,8 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
         *)
         let side x y d =
           assert (is_global y);
+          (* Also if d adds nothing: the task produces y, its next contribution may be new. *)
+          if Work.needs.need_dependencies then record_write y;
           let y_ref = init y in
           if tracing then trace "side" "side to %a (wpx: %b) from %a ## value: %a" S.Var.pretty_trace y !y_ref.wpoint S.Var.pretty_trace x S.Dom.pretty d;
           let old = !y_ref.value in
@@ -510,3 +604,5 @@ let () =
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ShallowestCreated))));
   Selector.add_solver ("td_worklist_cheapest_first",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (CheapestFirst))));
+  Selector.add_solver ("td_worklist_producers_first",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ProducersFirst))));
