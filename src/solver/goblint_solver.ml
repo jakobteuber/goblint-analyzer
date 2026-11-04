@@ -11,6 +11,7 @@ module TopDown = TopDown
 module TopDown_term = TopDown_term
 module TopDown_space_cache_term = TopDown_space_cache_term
 module TopDown_deprecated = TopDown_deprecated
+module Td_worklist = Td_worklist
 
 (** {1 SLR}
 

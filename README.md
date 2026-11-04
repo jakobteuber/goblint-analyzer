@@ -1,15 +1,26 @@
 # Goblint
 ## Work-List Heuristics
 
-The solver `td_worklist` executes its tasks in LIFO (`td_worklist_lifo`), FIFO (`td_worklist_fifo`) or random order (`td_worklist_random`); the random order is seeded differently in each run and the seed is logged with `-v`.
-None of the scripts below runs `td_worklist_random` by default; add it with `SOLVERS`.
+The solver `td_worklist` executes its tasks in an order chosen by a heuristic:
+LIFO (`td_worklist_lifo`), FIFO (`td_worklist_fifo`), most or least invalidated root first (`td_worklist_most_invalidated`, `td_worklist_least_invalidated`),
+shallowest creation depth first (`td_worklist_shallowest_created`), cheapest last task first (`td_worklist_cheapest_first`),
+producers before consumers (`td_worklist_producers_first`) or a random order (`td_worklist_random`).
+The random order is seeded differently in each run, unless the seed is set with `solvers.td_worklist.random_seed`; the seed is logged with `-v`.
 
-- [`scripts/compare_solvers.sh`](./scripts/compare_solvers.sh) compares the precision of the solvers `td_simplified_ref`, `td_worklist_lifo`, `td_worklist_fifo` and `td_parallel_base` pairwise on all regression tests (or the test groups or SV-COMP task directories given as arguments) using Goblint's `comparesolver` option.
-The per-test counts are written to `tests/suite_result/compare_solvers/compare.csv` and summarized per pair at the end; see the script header for options such as `SOLVERS` and `JOBS`.
-- [`scripts/solver_work.sh`](./scripts/solver_work.sh) runs the solvers `td_simplified_ref`, `td_worklist_lifo`, `td_worklist_fifo` and `td_parallel_base` on the regression tests and reports how much work each does, measured by the right-hand side evaluations and the calls to eval and iterate that these solvers log; the per-test numbers are written to `tests/suite_result/solver_work/work.csv` and the report to `report.txt` next to it.
-- [`scripts/solver_timing.sh`](./scripts/solver_timing.sh) runs the same solvers several times (`RUNS`, default 5) on the given C files or SV-COMP tasks and reports the median, spread and relative wall time of their `solve` timing section; the times are written to `tests/suite_result/solver_timing/timing.csv` and the report to `report.txt` next to it.
-- [`scripts/plot_results.py`](./scripts/plot_results.py) plots the results of these three scripts that are found in `tests/suite_result` (or given with `--work`, `--compare`, `--timing`) into `tests/suite_result/plots`, as SVG or any other format given with `--format`, e.g. `--format pdf`.
+The scripts below share their defaults ([`scripts/solver_lib.sh`](./scripts/solver_lib.sh)): all of these heuristics and `td_simplified_ref` (no work list) as the baseline, given by `SOLVERS`,
+plus `RANDOM_RUNS` random orders (default 5) with the fixed seeds 1, 2, ... (or `RANDOM_SEEDS`), run as `td_worklist_random#<seed>`.
+With a fixed seed, a random run is the same order in all scripts and repetitions.
 
+- [`scripts/compare_solvers.sh`](./scripts/compare_solvers.sh) compares the precision of the solvers pairwise on all regression tests (or the test groups or SV-COMP task directories given as arguments).
+Per test, one Goblint run solves with every solver and compares all pairs (the option `comparesolvers`), so the number of analyses grows only linearly with the number of solvers.
+The per-test counts are written to `tests/suite_result/compare_solvers/compare.csv` and summarized per pair at the end; see the script header for options such as `JOBS`.
+- [`scripts/solver_work.sh`](./scripts/solver_work.sh) runs the solvers on the regression tests (or SV-COMP tasks) and reports how much work each does, measured by the right-hand side evaluations and the calls to eval and iterate that these solvers log;
+the per-test numbers are written to `tests/suite_result/solver_work/work.csv` and the report to `report.txt` next to it.
+Per test, the random runs are reported as their best and worst run (`td_worklist_random#best`, `td_worklist_random#worst`), to show how much the order alone can gain or lose; the individual runs are kept in `work_runs.csv`.
+- [`scripts/solver_timing.sh`](./scripts/solver_timing.sh) runs the solvers several times (`RUNS`, default 5) on the given C files or SV-COMP tasks and reports the median, spread and relative wall time of their `solve` timing section;
+each random seed is timed as its own order, and the fastest and slowest seed are reported. The times are written to `tests/suite_result/solver_timing/timing.csv` and the report to `report.txt` next to it.
+- [`scripts/plot_results.py`](./scripts/plot_results.py) plots the results of these three scripts that are found in `tests/suite_result` (or given with `--work`, `--compare`, `--timing`) into `tests/suite_result/plots`,
+named `<result directory>_<plot>`, as SVG or any other format given with `--format`, e.g. `--format pdf`.
 
 ## Other
 [![GitHub release status](https://img.shields.io/github/v/release/goblint/analyzer)](https://github.com/goblint/analyzer/releases)

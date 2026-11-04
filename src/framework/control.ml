@@ -614,6 +614,37 @@ struct
         compare_with (Goblint_solver.Selector.choose_solver (get_string "comparesolver"))
       );
 
+      let compare_solvers = get_string_list "comparesolvers" in
+      if compare_solvers <> [] then (
+        (* Each solver as given, e.g. td_worklist_random#3, which is also its name in the comparisons. *)
+        let solve_with solver =
+          let name, label = match String.split_on_char '#' solver with
+            | name :: label :: _ -> name, Some label
+            | _ -> solver, None
+          in
+          let module PostSolverArg2 =
+          struct
+            include PostSolverArg (* with warnings, as the main solver *)
+            let should_save_run = false (* we already save main solver *)
+          end
+          in
+          let module S2 = (val Goblint_solver.Selector.choose_solver name) in
+          let module S2' = (GlobSolverFromEqSolver (S2 (PostSolverArg2))) (EQSys) (LHT) (GHT) in
+          if name = "td_worklist_random" then
+            Goblint_solver.Td_worklist.random_seed_override := Option.map int_of_string label;
+          let (r, _) = Fun.protect ~finally:(fun () -> Goblint_solver.Td_worklist.random_seed_override := None) (fun () ->
+              S2'.solve entrystates entrystates_global startvars' None
+            ) in
+          (solver, r)
+        in
+        let runs = (get_string "solver", (lh, gh)) :: List.map solve_with compare_solvers in
+        let rec pairs = function
+          | [] -> []
+          | x :: xs -> List.map (fun y -> (x, y)) xs @ pairs xs
+        in
+        List.iter (fun ((n1, r1), (n2, r2)) -> CompareGlobSys.compare (n1, n2) r1 r2) (pairs runs)
+      );
+
       (* Most warnings happen before during postsolver, but some happen later (e.g. in finalize), so enable this for the rest (if required by option). *)
       Domain.DLS.set AnalysisState.should_warn PostSolverArg.should_warn;
 

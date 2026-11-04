@@ -11,6 +11,10 @@ open Goblint_constraint.SolverTypes
 open Goblint_constraint.Translators
 open Messages
 
+(** Seed for the next solve with td_worklist_random, instead of solvers.td_worklist.random_seed.
+    Set by comparesolvers, which solves with several random orders in one run, where the configuration cannot change. *)
+let random_seed_override: int option ref = ref None
+
 (** What the solver knows about a root unknown when it adds it to the work list. *)
 type info = {
   invalidations: int; (** How often the root has been destabilized so far *)
@@ -104,8 +108,12 @@ struct
   let needs = needs_nothing
 
   let create _ =
-    (* The seed is logged, so that an ordering can be traced back to its run. *)
-    let seed = Random.State.bits (Random.State.make_self_init ()) in
+    (* The seed is logged, so that an ordering can be traced back to its run (and run again with solvers.td_worklist.random_seed). *)
+    let seed = match !random_seed_override, GobConfig.get_int "solvers.td_worklist.random_seed" with
+      | Some seed, _ -> seed
+      | None, -1 -> Random.State.bits (Random.State.make_self_init ())
+      | None, seed -> seed
+    in
     Logs.info "td_worklist_random: seed = %d" seed;
     { elems = DynArray.create (); rand = Random.State.make [|seed|] }
 

@@ -130,6 +130,14 @@
       "type": "string",
       "default": ""
     },
+    "comparesolvers": {
+      "title": "comparesolvers",
+      "description":
+        "Solve again with each of these solvers and compare all results pairwise, including the one of 'solver' (which is compared first). Unlike comparesolver, all solvers run the postsolvers with warnings, so that the results that are only produced while warning (e.g. by the race analysis) are complete in all of them. For td_worklist_random, a seed can be given after #, e.g. td_worklist_random#3.",
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
     "compare_runs": {
       "title": "compare_runs",
       "description":
@@ -2532,6 +2540,20 @@
       "title": "solvers",
       "type": "object",
       "properties": {
+        "td_worklist": {
+          "title": "solvers.td_worklist",
+          "type": "object",
+          "properties": {
+            "random_seed": {
+              "title": "solvers.td_worklist.random_seed",
+              "description":
+                "Seed of the random order of td_worklist_random, so that an order can be run again. -1: a different seed in each run.",
+              "type": "integer",
+              "default": -1
+            }
+          },
+          "additionalProperties": false
+        },
         "td3": {
           "title": "solvers.td3",
           "type": "object",
