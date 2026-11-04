@@ -11,11 +11,31 @@ open Goblint_constraint.SolverTypes
 open Goblint_constraint.Translators
 open Messages
 
+(** What the solver knows about a root unknown when it adds it to the work list. *)
+type info = {
+  invalidations: int; (** How often the root has been destabilized so far *)
+  depth: int;         (** Creation depth: 0 for the start unknowns, otherwise 1 + the depth of the root
+                          whose task first created it. Only collected if [need_depth], 0 otherwise. *)
+  last_cost: int;     (** Right-hand side evaluations of the last task of the root, 0 if it has not run yet.
+                          Only collected if [need_cost], 0 otherwise. *)
+}
+
+(** The fields of [info] that are only collected if the heuristic needs them. *)
+type needs = {
+  need_depth: bool;
+  need_cost: bool;
+}
+
+let needs_nothing = { need_depth = false; need_cost = false }
+
 (** Work list of root unknowns of solver tasks. *)
 module type WorkList =
 sig
   type elt
   type t
+
+  (** Which data the solver has to collect for [add]. *)
+  val needs: needs
 
   val create: unit -> t
 
@@ -23,9 +43,9 @@ sig
       @@@ duplicates can be removed but need not?
       @param w The work list.
       @param x The element to add.
-      @param invalidations How often the value of x has been invalidated so far.
+      @param info What the solver knows about x, see [info] and [needs].
   *)
-  val add: t -> elt -> invalidations:int -> unit
+  val add: t -> elt -> info -> unit
 
   (** Remove the next element from the work list.
       @param w The work list.
@@ -43,9 +63,10 @@ struct
   type elt = Var.t
   type t = Var.t Stack.t
 
+  let needs = needs_nothing
   let create () = Stack.create ()
 
-  let add w x ~invalidations:_ = Stack.push x w
+  let add w x _ = Stack.push x w
 
   let choose w =
     if Stack.is_empty w then
@@ -59,8 +80,9 @@ struct
   type elt = Var.t
   type t = Var.t Queue.t
 
+  let needs = needs_nothing
   let create () = Queue.create ()
-  let add w x ~invalidations:_ = Queue.push x w
+  let add w x _ = Queue.push x w
   let choose = Queue.take_opt
 end
 
@@ -70,13 +92,15 @@ struct
   type elt = Var.t
   type t = { elems: Var.t DynArray.t; rand: Random.State.t }
 
+  let needs = needs_nothing
+
   let create () =
     (* The seed is logged, so that an ordering can be traced back to its run. *)
     let seed = Random.State.bits (Random.State.make_self_init ()) in
     Logs.info "td_worklist_random: seed = %d" seed;
     { elems = DynArray.create (); rand = Random.State.make [|seed|] }
 
-  let add w x ~invalidations:_ = DynArray.add w.elems x
+  let add w x _ = DynArray.add w.elems x
 
   let choose w =
     let n = DynArray.length w.elems in
@@ -91,18 +115,20 @@ struct
     )
 end
 
-(** Chooses an element with the most ([most = true]) or least ([most = false]) invalidations,
-    counted when it was added. Ties are broken in LIFO order. *)
-module ByInvalidations (P: sig val most: bool end): WorkListHeuristic = functor (Var: VarType) ->
+(** Chooses an element with the largest ([most = true]) or smallest ([most = false]) [key],
+    as it was when the element was added. Ties are broken in LIFO order.
+    @param needs The data that [key] uses. *)
+module ByKey (P: sig val key: info -> int val most: bool val needs: needs end): WorkListHeuristic = functor (Var: VarType) ->
 struct
   type elt = Var.t
-  (** Elements by their number of invalidations; buckets are never empty. *)
+  (** Elements by their key; buckets are never empty. *)
   type t = Var.t list Map.Int.t ref
 
+  let needs = P.needs
   let create () = ref Map.Int.empty
 
-  let add w x ~invalidations =
-    w := Map.Int.modify_def [] invalidations (List.cons x) !w
+  let add w x info =
+    w := Map.Int.modify_def [] (P.key info) (List.cons x) !w
 
   let choose w =
     match (if P.most then Map.Int.max_binding_opt else Map.Int.min_binding_opt) !w with
@@ -112,8 +138,14 @@ struct
     | Some (n, x :: xs) -> w := Map.Int.add n xs !w; Some x
 end
 
-module MostInvalidated = ByInvalidations (struct let most = true end)
-module LeastInvalidated = ByInvalidations (struct let most = false end)
+module MostInvalidated = ByKey (struct let key i = i.invalidations let most = true let needs = needs_nothing end)
+module LeastInvalidated = ByKey (struct let key i = i.invalidations let most = false let needs = needs_nothing end)
+
+(** Roots that were created closer to the start unknowns first, e.g. main before the threads it creates. *)
+module ShallowestCreated = ByKey (struct let key i = i.depth let most = false let needs = { needs_nothing with need_depth = true } end)
+
+(** Roots whose last task was cheapest first; roots that have not run yet count as cost 0. *)
+module CheapestFirst = ByKey (struct let key i = i.last_cost let most = false let needs = { needs_nothing with need_cost = true } end)
 
 (** @param WL The heuristic that decides in which order the tasks are executed. *)
 module Base (WL: WorkListHeuristic) : DemandEqSolver =
@@ -147,6 +179,11 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
 
       (** Roots of the tasks that are waiting to be executed. *)
       let work = Work.create () in
+
+      (* Data for the work list heuristics, see [info] *)
+      let current_root = ref None in (* Root of the task that is currently executed *)
+      let depths : int HM.t = HM.create 10 in (* Creation depth of each root *)
+      let costs : int HM.t = HM.create 10 in (* Right-hand side evaluations of the last task of each root *)
 
       print_solver_stats := (fun () ->
           Logs.debug "|data|=%d" (HM.length data);
@@ -205,7 +242,20 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
       (** Add a task to solve for y to the work list. *)
       let add_task y =
         if tracing then trace "create" "add_task %a" S.Var.pretty_trace y;
-        Work.add work y ~invalidations:!(init y).invalidations
+        let info = {
+          invalidations = !(init y).invalidations;
+          depth = if Work.needs.need_depth then HM.find_default depths y 0 else 0;
+          last_cost = if Work.needs.need_cost then HM.find_default costs y 0 else 0;
+        } in
+        Work.add work y info
+      in
+
+      (** Record that y can be reached as a root at creation depth d; keeps the smallest depth.
+          Only called if [Work.needs.need_depth]. *)
+      let record_depth y d =
+        match HM.find_option depths y with
+        | Some d' when d' <= d -> ()
+        | _ -> HM.replace depths y d
       in
 
       (** Destabilizes the unknowns in w and their infl recursively.
@@ -300,6 +350,11 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
         *)
         let create x y = (* create called from x on y *)
           if tracing then trace "create" "create from td_worklist was executed from %a on %a" S.Var.pretty_trace x S.Var.pretty_trace y;
+          if Work.needs.need_depth then (
+            (* Create nodes are only evaluated inside a task, so there is a current root. *)
+            let parent_depth = HM.find_default depths (Option.get !current_root) 0 in
+            record_depth y (parent_depth + 1)
+          );
           add_task y
         in
 
@@ -364,7 +419,11 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
         ) else (
           if tracing then trace "thread_pool" "starting task to iterate %a" S.Var.pretty_trace y;
           y_ref := { !y_ref with stable = true; called = true };
-          iterate None y
+          current_root := Some y;
+          let rhs_before = !rhs_evals in
+          iterate None y;
+          if Work.needs.need_cost then HM.replace costs y (!rhs_evals - rhs_before);
+          current_root := None
         )
       in
 
@@ -396,6 +455,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
           );
           List.iter (fun x ->
               if tracing then trace "multivar" "solving for %a" S.Var.pretty_trace x;
+              if Work.needs.need_depth then record_depth x 0;
               add_task x;
               (* while not (is_empty work) do run_task (pop work) done *)
               let rec run_all () =
@@ -446,3 +506,7 @@ let () =
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (MostInvalidated))));
   Selector.add_solver ("td_worklist_least_invalidated",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (LeastInvalidated))));
+  Selector.add_solver ("td_worklist_shallowest_created",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ShallowestCreated))));
+  Selector.add_solver ("td_worklist_cheapest_first",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (CheapestFirst))));
