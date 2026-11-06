@@ -3,8 +3,10 @@
 
 The solver `td_worklist` executes its tasks in an order chosen by a heuristic:
 LIFO (`td_worklist_lifo`), FIFO (`td_worklist_fifo`), most or least invalidated root first (`td_worklist_most_invalidated`, `td_worklist_least_invalidated`),
-shallowest creation depth first (`td_worklist_shallowest_created`), cheapest last task first (`td_worklist_cheapest_first`),
-producers before consumers (`td_worklist_producers_first`) or a random order (`td_worklist_random`).
+shallowest or deepest creation depth first (`td_worklist_shallowest_created`, `td_worklist_deepest_created`),
+cheapest or costliest last task first (`td_worklist_cheapest_first`, `td_worklist_costliest_first`),
+producers before consumers or the other way round (`td_worklist_producers_first`, `td_worklist_consumers_first`) or a random order (`td_worklist_random`).
+Each heuristic with an opposite is implemented in both directions.
 The random order is seeded differently in each run, unless the seed is set with `solvers.td_worklist.random_seed`; the seed is logged with `-v`.
 
 The scripts below share their defaults ([`scripts/solver_lib.sh`](./scripts/solver_lib.sh)): all of these heuristics and `td_simplified_ref` (no work list) as the baseline, given by `SOLVERS`,

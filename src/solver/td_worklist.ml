@@ -161,16 +161,26 @@ module LeastInvalidated = ByKey (struct let key i = i.invalidations let most = f
 (** Roots that were created closer to the start unknowns first, e.g. main before the threads it creates. *)
 module ShallowestCreated = ByKey (struct let key i = i.depth let most = false let needs = { needs_nothing with need_depth = true } end)
 
+(** The opposite of [ShallowestCreated]: roots that were created further from the start unknowns first,
+    e.g. the threads before main, which created them. *)
+module DeepestCreated = ByKey (struct let key i = i.depth let most = true let needs = { needs_nothing with need_depth = true } end)
+
 (** Roots whose last task was cheapest first; roots that have not run yet count as cost 0. *)
 module CheapestFirst = ByKey (struct let key i = i.last_cost let most = false let needs = { needs_nothing with need_cost = true } end)
 
-(** Producers before consumers: chooses a waiting root that no other waiting root can reach in the graph of
+(** The opposite of [CheapestFirst]: roots whose last task was costliest first; roots that have not run yet
+    count as cost 0, i.e. they come after all roots that have run. *)
+module CostliestFirst = ByKey (struct let key i = i.last_cost let most = true let needs = { needs_nothing with need_cost = true } end)
+
+(** Producers before consumers ([producers = true]): chooses a waiting root that no other waiting root can reach in the graph of
     [context.consumers], unless they reach each other (they are in the same cycle). Such a root always exists,
-    as "reaches, but is not reached back" is a strict partial order. Ties are broken in FIFO order.
-    A root that is added while it is already waiting keeps its position.
+    as "reaches, but is not reached back" is a strict partial order.
+    Consumers before producers ([producers = false]), the opposite: chooses a waiting root that reaches no other waiting root
+    in that graph, unless they reach each other.
+    Ties are broken in FIFO order. A root that is added while it is already waiting keeps its position.
     Each choose costs O(n * (r + e)) for n waiting roots, r roots and e edges in the graph:
     fine for the few roots of thread creations, but a lot for programs with many roots. *)
-module ProducersFirst: WorkListHeuristic = functor (Var: VarType) ->
+module ByDependencies (P: sig val producers: bool end): WorkListHeuristic = functor (Var: VarType) ->
 struct
   module VH = Hashtbl.Make (Var)
   type elt = Var.t
@@ -209,19 +219,21 @@ struct
       None
     else (
       let reach = Array.init n (fun i -> reachable w (DynArray.get w.waiting i)) in
-      (* Whether another waiting root reaches root i, but i does not reach it back. *)
-      let produced_by_other i =
-        let x = DynArray.get w.waiting i in
+      (* Whether root a reaches root b, but b does not reach a back (indices into waiting). *)
+      let strictly_reaches a b =
+        VH.mem reach.(a) (DynArray.get w.waiting b) && not (VH.mem reach.(b) (DynArray.get w.waiting a))
+      in
+      (* Whether root i has to wait for another waiting root: for producers first, if another root strictly reaches it
+         (produces for it); for consumers first, if it strictly reaches another root (another root consumes from it). *)
+      let blocked i =
         let rec check j =
-          j < n && (
-            (j <> i && VH.mem reach.(j) x && not (VH.mem reach.(i) (DynArray.get w.waiting j)))
-            || check (j + 1))
+          j < n && ((j <> i && (if P.producers then strictly_reaches j i else strictly_reaches i j)) || check (j + 1))
         in
         check 0
       in
-      (* Never runs past the end, as one of the roots is not produced by any other. *)
+      (* Never runs past the end, as one of the roots is not blocked by any other. *)
       let rec first i =
-        if i = n - 1 || not (produced_by_other i) then i else first (i + 1)
+        if i = n - 1 || not (blocked i) then i else first (i + 1)
       in
       let i = first 0 in
       let x = DynArray.get w.waiting i in
@@ -230,6 +242,9 @@ struct
       Some x
     )
 end
+
+module ProducersFirst = ByDependencies (struct let producers = true end)
+module ConsumersFirst = ByDependencies (struct let producers = false end)
 
 (** @param WL The heuristic that decides in which order the tasks are executed. *)
 module Base (WL: WorkListHeuristic) : DemandEqSolver =
@@ -614,3 +629,9 @@ let () =
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (CheapestFirst))));
   Selector.add_solver ("td_worklist_producers_first",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ProducersFirst))));
+  Selector.add_solver ("td_worklist_deepest_created",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (DeepestCreated))));
+  Selector.add_solver ("td_worklist_costliest_first",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (CostliestFirst))));
+  Selector.add_solver ("td_worklist_consumers_first",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ConsumersFirst))));

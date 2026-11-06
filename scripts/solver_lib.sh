@@ -1,7 +1,7 @@
 # Shared parts of compare_solvers.sh, solver_work.sh and solver_timing.sh, sourced by them.
 
 # The work-list heuristics of td_worklist, and td_simplified_ref (no work list) as the baseline.
-DEFAULT_SOLVERS="td_simplified_ref td_worklist_lifo td_worklist_fifo td_worklist_most_invalidated td_worklist_least_invalidated td_worklist_shallowest_created td_worklist_cheapest_first td_worklist_producers_first"
+DEFAULT_SOLVERS="td_simplified_ref td_worklist_lifo td_worklist_fifo td_worklist_most_invalidated td_worklist_least_invalidated td_worklist_shallowest_created td_worklist_deepest_created td_worklist_cheapest_first td_worklist_costliest_first td_worklist_producers_first td_worklist_consumers_first"
 
 # Sets the array SOLVERS from $SOLVERS (default: $DEFAULT_SOLVERS) and adds the random runs:
 # td_worklist_random#<seed> for each seed in $RANDOM_SEEDS (default: 1 ... $RANDOM_RUNS; RANDOM_RUNS default: 5).

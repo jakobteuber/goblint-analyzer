@@ -43,6 +43,8 @@ BASELINE = "td_simplified_ref"
 # Colors: the validated categorical palette of the dataviz guidelines, in its slot order. A solver keeps its color in
 # every plot; all runs of td_worklist_random share one color. The order of the entries is the order of the solvers in the plots.
 # The baseline is gray, as it is drawn as a reference (the ratio 1) rather than as a series.
+# The opposite variants of a heuristic (OPPOSITES) have no slot of their own (there are no more than 8 categorical hues):
+# they share the color of their heuristic and are told apart by a dotted line and triangle markers.
 SOLVER_COLORS = {
     "td_worklist_lifo": "#2a78d6",  # blue
     "td_worklist_fifo": "#eb6834",  # orange
@@ -50,9 +52,18 @@ SOLVER_COLORS = {
     "td_worklist_random": "#eda100",  # yellow
     "td_worklist_least_invalidated": "#e87ba4",  # magenta
     "td_worklist_shallowest_created": "#008300",  # green
+    "td_worklist_deepest_created": "#008300",
     "td_worklist_cheapest_first": "#6250d6",  # violet
+    "td_worklist_costliest_first": "#6250d6",
     "td_worklist_producers_first": "#e34948",  # red
+    "td_worklist_consumers_first": "#e34948",
     BASELINE: "#898781",  # gray
+}
+# Opposite variant -> the heuristic whose color it shares.
+OPPOSITES = {
+    "td_worklist_deepest_created": "td_worklist_shallowest_created",
+    "td_worklist_costliest_first": "td_worklist_cheapest_first",
+    "td_worklist_consumers_first": "td_worklist_producers_first",
 }
 OTHER_COLOR = "#52514e"  # solvers without a slot, e.g. td_parallel_base
 # Short names for the plots.
@@ -63,8 +74,11 @@ SOLVER_LABELS = {
     "td_worklist_most_invalidated": "most invalidated",
     "td_worklist_least_invalidated": "least invalidated",
     "td_worklist_shallowest_created": "shallowest created",
+    "td_worklist_deepest_created": "deepest created",
     "td_worklist_cheapest_first": "cheapest first",
+    "td_worklist_costliest_first": "costliest first",
     "td_worklist_producers_first": "producers first",
+    "td_worklist_consumers_first": "consumers first",
     "td_worklist_random": "random",
 }
 INK = "#0b0b0b"
@@ -128,9 +142,11 @@ def solver_label(solver, runs=None):
 
 
 def solver_style(solver):
-    """Line style and marker fill: the best of repeated runs solid and filled, the worst dashed and hollow."""
+    """Line style, marker and marker fill: the best of repeated runs solid and filled, the worst dashed and hollow;
+    opposite variants (sharing the color of their heuristic) dotted, with triangles."""
     worst = solver.endswith("#worst")
-    return {"linestyle": "--" if worst else "-", "filled": not worst}
+    opposite = base_name(solver) in OPPOSITES
+    return {"linestyle": "--" if worst else ":" if opposite else "-", "marker": "^" if opposite else "o", "filled": not worst}
 
 
 def solver_order(solvers):
@@ -237,6 +253,13 @@ def plot_work(csv, out, formats):
     counts = sorted({len(p) for p in pairs.values()})
     counts_note = (f"{counts[0]}" if len(counts) == 1 else f"{counts[0]} to {counts[-1]}") + f" of {n_tests}"
     note = "".join(f"{label(s + '#best')}/worst: per test, the best and the worst of {n} runs by {metric_label}.\n" for s, n in runs.items())
+    # Solvers that did the same work as an earlier one on every test hide behind it in the plots: name them.
+    same = []
+    for i, s in enumerate(others):
+        twin = next((t for t in others[:i] if ok[s].equals(ok[t])), None)
+        if twin:
+            same.append(f"{label(s)}: the same as {label(twin)} on every test, hidden behind it.\n")
+    note = "".join(same) + note
     note += f"Tests on which the solver and the baseline succeeded: {counts_note}.\n{data_note(csv)}"
     print(f"{name}: {metric}, baseline {base}, common tests {counts_note}")
 
@@ -271,12 +294,13 @@ def plot_work(csv, out, formats):
         gm = pd.DataFrame({s: np.exp(np.log(r).groupby(r.index.str.split("/").str[0]).mean()) for s, r in ratios.items()})
         sizes = df.groupby("group")["test"].nunique()
         gm = gm.reindex(sizes.sort_values().index)  # largest groups on top
-        fig, ax = plt.subplots(figsize=(7.5, 0.4 * len(gm) + 1.8))
+        row = max(0.4, 0.05 * len(others))  # room for one dot per solver in each row
+        fig, ax = plt.subplots(figsize=(7.5, row * len(gm) + 1.8))
         y = np.arange(len(gm))
         offsets = np.linspace(-0.3, 0.3, len(others)) if len(others) > 1 else [0]
         for off, s in zip(offsets, others):
             filled = solver_style(s)["filled"]
-            ax.scatter(gm[s], y + off, s=22, zorder=3, label=label(s),
+            ax.scatter(gm[s], y + off, s=22, zorder=3, label=label(s), marker=solver_style(s)["marker"],
                        color=solver_color(s) if filled else SURFACE, edgecolors=solver_color(s) if not filled else SURFACE,
                        linewidths=1.2 if not filled else 0.8)
         ax.axvline(1, color=INK_MUTED, linewidth=1)
@@ -337,7 +361,7 @@ def plot_work_per_test(ok, base, others, label, metric_label, runs, n_tests, csv
     for ax, s in zip(axes.flat, others):
         ax.plot([lo, hi], [lo, hi], color=AXIS, linewidth=1, zorder=1)
         filled = solver_style(s)["filled"]
-        ax.scatter(pairs[s][base], pairs[s][s], s=10, zorder=2, alpha=0.6,
+        ax.scatter(pairs[s][base], pairs[s][s], s=10, zorder=2, alpha=0.6, marker=solver_style(s)["marker"],
                    color=solver_color(s) if filled else "none", edgecolors=solver_color(s), linewidths=0 if filled else 0.8)
         ax.set_xscale("log")
         ax.set_yscale("log")
