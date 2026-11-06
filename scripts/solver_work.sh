@@ -111,7 +111,7 @@ rmdir "$OUT/goblint-dirs" 2>/dev/null
 
 {
   echo "test,solver,status,eval,iterate,rhs"
-  cat "$OUT"/rows/*.csv | sort
+  find "$OUT/rows" -name "*.csv" -exec cat {} + | sort
 } > "$OUT/work_runs.csv"
 rm -rf "$OUT/rows"
 

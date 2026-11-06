@@ -108,7 +108,7 @@ rmdir "$OUT/goblint-dirs" 2>/dev/null
 
 {
   echo "test,left,right,status,globals_equal,globals_left,globals_right,globals_incomparable,locals_equal,locals_left,locals_right,locals_incomparable,ctx_equal,ctx_left,ctx_right,ctx_incomparable,ctx_missing_in_right,ctx_missing_in_left"
-  cat "$OUT"/rows/*.csv | sort
+  find "$OUT/rows" -name "*.csv" -exec cat {} + | sort
 } > "$OUT/compare.csv"
 rm -rf "$OUT/rows"
 

@@ -13,6 +13,7 @@ Without CSV arguments, all results under tests/suite_result are plotted:
 The plots are written to tests/suite_result/plots (default) as <result directory>_<plot>.<format>:
   <dir>_work-ratio-cdf     distribution of the per-test work relative to the baseline
   <dir>_work-per-test      work of each solver against the baseline, one dot per test
+  <dir>_work-per-test_vs-<solver>  the same with another solver as the baseline, for each solver
   <dir>_work-per-group     geometric mean of the ratio per test group
   <dir>_run-status         ok, timeout and error runs per solver (only if a run failed)
   <dir>_precision-matrix   per pair of solvers: tests on which one is strictly more precise, and tests where they differ otherwise
@@ -24,6 +25,7 @@ Requires matplotlib and pandas.
 import argparse
 import math
 import re
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -171,6 +173,9 @@ def place_footnote(fig):
     boxes = [a.xaxis.get_tightbbox(renderer) for a in fig.axes if a.get_visible()]
     bottom = min(b.y0 for b in boxes if b is not None)  # lowest x axis, in pixels
     left = ax.get_position().x0
+    # Wrap to the width of the figure, so that a long dataset description does not widen it (about 0.5 em per character).
+    width = max(40, int(fig.get_figwidth() * (0.98 - left) * 72 / (8 * 0.5)))
+    text = "\n".join(textwrap.fill(line, width) for line in text.split("\n"))
     fig.text(left, bottom / fig.bbox.height - 0.01, text, color=INK_MUTED, fontsize=8, ha="left", va="top")
 
 
@@ -254,30 +259,11 @@ def plot_work(csv, out, formats):
     footnote(ax, "Left of 1: less work than the baseline.\n" + note)
     save(fig, out, f"{name}_work-ratio-cdf", formats)
 
-    # 2. Work of each solver against the baseline, per test: does the difference grow with the size of the problem?
-    ncols = min(3, len(others))
-    nrows = math.ceil(len(others) / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.1 * ncols, 2.9 * nrows), sharex=True, sharey=True, squeeze=False)
-    lo = max(1, min(p.min().min() for p in pairs.values()))
-    hi = max(p.max().max() for p in pairs.values())
-    for ax in axes.flat[len(others):]:
-        ax.set_visible(False)
-    for ax, s in zip(axes.flat, others):
-        ax.plot([lo, hi], [lo, hi], color=AXIS, linewidth=1, zorder=1)
-        filled = solver_style(s)["filled"]
-        ax.scatter(pairs[s][base], pairs[s][s], s=10, zorder=2, alpha=0.6,
-                   color=solver_color(s) if filled else "none", edgecolors=solver_color(s), linewidths=0 if filled else 0.8)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_title(label(s), fontsize=10)
-    for ax in axes[-1]:
-        ax.set_xlabel(base_label)
-    for row in axes:
-        row[0].set_ylabel("solver")
-    fig.suptitle(f"{metric_label.capitalize()} per test, against {base_label}", x=0.01, ha="left", fontweight="bold", color=INK, fontsize=11)
-    fig.tight_layout()
-    footnote(axes[-1][0], "One dot per test, both axes log scale. Above the diagonal: more work than the baseline.\n" + note)
-    save(fig, out, f"{name}_work-per-test", formats)
+    # 2. Work of each solver against a baseline, per test: does the difference grow with the size of the problem?
+    # Once against the default baseline, and once against each other solver.
+    for b in solvers:
+        plot_work_per_test(ok, b, [s for s in solvers if s != b], label, metric_label, runs, n_tests, csv, out,
+                           f"{name}_work-per-test" + ("" if b == base else f"_vs-{file_label(b)}"), formats)
 
     # 3. Per test group (e.g. SV-COMP directory), if there are few enough to read.
     groups = df["group"].unique()
@@ -328,6 +314,44 @@ def plot_work(csv, out, formats):
         save(fig, out, f"{name}_run-status", formats)
 
 
+def file_label(solver):
+    """Solver name for file names, e.g. td_worklist_random#best -> random-best."""
+    return solver.removeprefix("td_worklist_").removeprefix("td_").replace("#", "-")
+
+
+def plot_work_per_test(ok, base, others, label, metric_label, runs, n_tests, csv, out, filename, formats):
+    """Scatter plot per solver of its work against the work of base, per test; ok: work per test (rows) and solver (columns)."""
+    base_label = label(base)
+    pairs = {s: p[(p[base] > 0) & (p[s] > 0)] for s in others for p in [ok[[base, s]].dropna()]}
+    counts = sorted({len(p) for p in pairs.values()})
+    counts_note = (f"{counts[0]}" if len(counts) == 1 else f"{counts[0]} to {counts[-1]}") + f" of {n_tests}"
+    note = "".join(f"{label(s + '#best')}/worst: per test, the best and the worst of {n} runs by {metric_label}.\n" for s, n in runs.items())
+    note += f"Tests on which the solver and the baseline succeeded: {counts_note}.\n{data_note(csv)}"
+    ncols = min(3, len(others))
+    nrows = math.ceil(len(others) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.1 * ncols, 2.9 * nrows), sharex=True, sharey=True, squeeze=False)
+    lo = max(1, min(p.min().min() for p in pairs.values()))
+    hi = max(p.max().max() for p in pairs.values())
+    for ax in axes.flat[len(others):]:
+        ax.set_visible(False)
+    for ax, s in zip(axes.flat, others):
+        ax.plot([lo, hi], [lo, hi], color=AXIS, linewidth=1, zorder=1)
+        filled = solver_style(s)["filled"]
+        ax.scatter(pairs[s][base], pairs[s][s], s=10, zorder=2, alpha=0.6,
+                   color=solver_color(s) if filled else "none", edgecolors=solver_color(s), linewidths=0 if filled else 0.8)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title(label(s), fontsize=10)
+    for ax in axes[-1]:
+        ax.set_xlabel(base_label)
+    for row in axes:
+        row[0].set_ylabel("solver")
+    fig.suptitle(f"{metric_label.capitalize()} per test, against {base_label}", x=0.01, ha="left", fontweight="bold", color=INK, fontsize=11)
+    fig.tight_layout()
+    footnote(axes[-1][0], "One dot per test, both axes log scale. Above the diagonal: more work than the baseline.\n" + note)
+    save(fig, out, filename, formats)
+
+
 # Precision (compare_solvers.sh)
 
 def plot_compare(csv, out, formats):
@@ -356,23 +380,52 @@ def plot_compare(csv, out, formats):
     failed_tests = df[df["status"] != "ok"]["test"].nunique()
     print(f"{name}: {n} solvers, {n_tests} tests")
 
-    labels = [solver_label(s) for s in solvers]
-    vmax = max(1, better.max(), mixed.max())
+    # The random orders (one per seed) are combined into one row and column: per cell the median over the seeds
+    # (or over the pairs of different seeds, on the diagonal), and the range from the fewest to the most tests.
+    seeds = [i for i, s in enumerate(solvers) if base_name(s) == "td_worklist_random" and s.partition("#")[2].isdigit()]
+    groups = [[i] for i in range(n) if i not in seeds]
+    labels = [solver_label(solvers[g[0]]) for g in groups]
+    random_group = None
+    if len(seeds) > 1:
+        random_group = sorted(groups + [seeds], key=lambda g: g[0]).index(seeds)
+        groups.insert(random_group, seeds)
+        labels.insert(random_group, f"random, {len(seeds)} seeds")
+    elif seeds:
+        groups = [[i] for i in range(n)]
+        labels = [solver_label(s) for s in solvers]
+
+    def collapse(m):
+        """Median, min and max per cell over the members of the groups; NaN where there is nothing to compare."""
+        k = len(groups)
+        med, lo, hi = (np.full((k, k), np.nan) for _ in range(3))
+        for a, ga in enumerate(groups):
+            for b, gb in enumerate(groups):
+                v = [m[i, j] for i in ga for j in gb if i != j]
+                if v:
+                    med[a, b], lo[a, b], hi[a, b] = np.median(v), min(v), max(v)
+        return med, lo, hi
+
+    better, mixed = collapse(better), collapse(mixed)
+    n = len(groups)
+    vmax = max(1, np.nanmax(better[0]), np.nanmax(mixed[0]))
     cmap = LinearSegmentedColormap.from_list("blues", SEQUENTIAL)
     size = 0.42 * n + 2.4
     fig, axes = plt.subplots(1, 2, figsize=(2 * size + 0.6, size + 0.4))
     panels = [(better, "Strictly more precise: row solver than column solver", "more precise", "than"),
               (mixed, "Differing otherwise: both directions, incomparable or missing contexts", "", "")]
-    for ax, (m, title, ylab, xlab) in zip(axes, panels):
-        shown = np.ma.masked_where((m == 0) | np.eye(n, dtype=bool), m)
+    for ax, ((m, lo, hi), title, ylab, xlab) in zip(axes, panels):
+        shown = np.ma.masked_where(np.isnan(m) | (m == 0), m)
         ax.imshow(shown, cmap=cmap, vmin=0, vmax=vmax, aspect="equal")
         for i in range(n):
             for j in range(n):
-                if i == j:
+                if np.isnan(m[i, j]):
                     ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, color=GRID, linewidth=0))
-                elif m[i, j] > 0:
+                elif hi[i, j] > 0:
                     dark = m[i, j] > 0.45 * vmax
-                    ax.text(j, i, str(m[i, j]), ha="center", va="center", fontsize=7, color=SURFACE if dark else INK)
+                    text = f"{m[i, j]:g}"
+                    if lo[i, j] != hi[i, j]:
+                        text += f"\n{lo[i, j]:g}–{hi[i, j]:g}"
+                    ax.text(j, i, text, ha="center", va="center", fontsize=7, color=SURFACE if dark else INK)
         ax.set_xticks(range(n), labels, rotation=45, ha="right", rotation_mode="anchor")
         ax.set_yticks(range(n), labels)
         ax.set_xticks(np.arange(-0.5, n), minor=True)
@@ -387,7 +440,12 @@ def plot_compare(csv, out, formats):
             ax.set_xlabel(xlab)
     fig.suptitle("Precision of the solvers, compared pairwise: number of tests", x=0.01, ha="left", fontweight="bold", color=INK, fontsize=11)
     fig.tight_layout()
+    random_note = ""
+    if random_group is not None:
+        random_note = (f"random, {len(seeds)} seeds: median over the seeds and below it the range (fewest–most tests); "
+                       "on the diagonal over the pairs of different seeds, i.e. how much two random orders differ.\n")
     footnote(axes[0], "A test counts if any unknown (global, or local per node or per context) differs. Empty cells: no such test.\n"
+             + random_note +
              f"Tests: {n_tests}, of which {failed_tests} failed (error or timeout) and are not counted.\n" + data_note(csv))
     save(fig, out, f"{name}_precision-matrix", formats)
 
