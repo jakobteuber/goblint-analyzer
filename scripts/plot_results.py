@@ -57,6 +57,9 @@ SOLVER_COLORS = {
     "td_worklist_costliest_first": "#6250d6",
     "td_worklist_producers_first": "#e34948",  # red
     "td_worklist_consumers_first": "#e34948",
+    # No hue left: the dark neutral ink, which is not a categorical slot (see OTHER_COLOR).
+    "td_worklist_destabilizers_first": "#52514e",
+    "td_worklist_destabilizers_last": "#52514e",
     BASELINE: "#898781",  # gray
 }
 # Opposite variant -> the heuristic whose color it shares.
@@ -64,6 +67,8 @@ OPPOSITES = {
     "td_worklist_deepest_created": "td_worklist_shallowest_created",
     "td_worklist_costliest_first": "td_worklist_cheapest_first",
     "td_worklist_consumers_first": "td_worklist_producers_first",
+    "td_worklist_destabilizers_last": "td_worklist_destabilizers_first",
+    "td_worklist_most_recently_fired": "td_worklist_least_recently_fired",
 }
 OTHER_COLOR = "#52514e"  # solvers without a slot, e.g. td_parallel_base
 # Short names for the plots.
@@ -79,6 +84,10 @@ SOLVER_LABELS = {
     "td_worklist_costliest_first": "costliest first",
     "td_worklist_producers_first": "producers first",
     "td_worklist_consumers_first": "consumers first",
+    "td_worklist_destabilizers_first": "destabilizers first",
+    "td_worklist_destabilizers_last": "destabilizers last",
+    "td_worklist_least_recently_fired": "least recently fired",
+    "td_worklist_most_recently_fired": "most recently fired",
     "td_worklist_random": "random",
 }
 INK = "#0b0b0b"

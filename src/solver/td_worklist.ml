@@ -26,6 +26,10 @@ type info = {
   last_cost: int;
   (** Right-hand side evaluations of the last task of the root, 0 if it has not run yet.
       Only collected if [need_cost], 0 otherwise. *)
+  last_run: int;
+  (** When the last task of the root ran: the number of that task among all executed
+      tasks, counted from 1, or 0 if the root has not run yet.
+      Only collected if [need_last_run], 0 otherwise. *)
 }
 
 (** The data that is only collected if the heuristic needs it:
@@ -33,10 +37,18 @@ type info = {
 type needs = {
   need_depth: bool;
   need_cost: bool;
+  need_last_run: bool;
   need_dependencies: bool;
+  need_destabilizations: bool;
 }
 
-let needs_nothing = { need_depth = false; need_cost = false; need_dependencies = false }
+let needs_nothing = {
+  need_depth = false;
+  need_cost = false;
+  need_last_run = false;
+  need_dependencies = false;
+  need_destabilizations = false;
+}
 
 (** What the solver knows about the dependencies between roots,
     for heuristics that need more than [info].
@@ -46,6 +58,10 @@ type 'v context = {
   (** Roots whose tasks have read a global that the task of the given root has written,
       without the root itself.
       Only collected if [need_dependencies], [] otherwise. *)
+  destabilizations: 'v -> 'v -> int;
+  (** [destabilizations r r'] is how often the tasks of root r have destabilized root r',
+      i.e. changed a value that r' had used, so that r' had to run again (0 if r = r').
+      Only collected if [need_destabilizations], 0 otherwise. *)
 }
 
 (** Work list of root unknowns of solver tasks. *)
@@ -210,6 +226,82 @@ module CostliestFirst = ByKey (struct
     let needs = { needs_nothing with need_cost = true }
   end)
 
+(** Least recently fired ([least = true], Kanamori & Weise 1994; see also Pearce 2005, §4.1):
+    chooses the root whose last task ran longest ago, roots that have not run yet first.
+    The order is fair: every waiting root runs before any root runs again.
+    Most recently fired ([least = false]), the opposite: chooses the root whose last task
+    ran most recently; roots that have not run yet come after all roots that have run.
+    Ties (only among roots that have not run yet) are broken in FIFO order.
+    A root that is added while it is already waiting keeps its position:
+    as in Pearce's LRF, each root is in the work list at most once.
+    Its key cannot change while it waits, as it only changes when the root runs. *)
+module ByLastRun (P: sig val least: bool end)
+  : WorkListHeuristic = functor (Var: VarType) ->
+struct
+  module VH = Hashtbl.Make (Var)
+  type elt = Var.t
+  type t = {
+    by_last_run: Var.t Queue.t Map.Int.t ref; (** Buckets are never empty. *)
+    is_waiting: unit VH.t;
+  }
+
+  let needs = { needs_nothing with need_last_run = true }
+  let create _ = { by_last_run = ref Map.Int.empty; is_waiting = VH.create 10 }
+
+  let add w x info =
+    if not (VH.mem w.is_waiting x) then (
+      VH.replace w.is_waiting x ();
+      let key = info.last_run in
+      match Map.Int.find_opt key !(w.by_last_run) with
+      | Some q -> Queue.push x q
+      | None ->
+        let q = Queue.create () in
+        Queue.push x q;
+        w.by_last_run := Map.Int.add key q !(w.by_last_run)
+    )
+
+  let choose w =
+    (* Never run (key 0) is the least recent, so it comes first for LRF and last for MRF. *)
+    match (if P.least then Map.Int.min_binding_opt else Map.Int.max_binding_opt) !(w.by_last_run) with
+    | None -> None
+    | Some (key, q) ->
+      let x = Queue.pop q in
+      if Queue.is_empty q then w.by_last_run := Map.Int.remove key !(w.by_last_run);
+      VH.remove w.is_waiting x;
+      Some x
+end
+
+module LeastRecentlyFired = ByLastRun (struct let least = true end)
+module MostRecentlyFired = ByLastRun (struct let least = false end)
+
+(** Waiting roots in the order in which they were added, without duplicates:
+    a root that is added while it is already waiting keeps its position. *)
+module Waiting (Var: VarType) =
+struct
+  module VH = Hashtbl.Make (Var)
+  type t = {
+    roots: Var.t DynArray.t;
+    is_waiting: unit VH.t;
+  }
+
+  let create () = { roots = DynArray.create (); is_waiting = VH.create 10 }
+  let length w = DynArray.length w.roots
+  let get w i = DynArray.get w.roots i
+
+  let add w x =
+    if not (VH.mem w.is_waiting x) then (
+      VH.replace w.is_waiting x ();
+      DynArray.add w.roots x
+    )
+
+  (** Removes and returns the root at position i. *)
+  let take w i =
+    let x = DynArray.get w.roots i in
+    DynArray.delete w.roots i;
+    VH.remove w.is_waiting x;
+    x
+end
+
 (** Producers before consumers ([producers = true]): chooses a waiting root that no
     other waiting root can reach in the graph of [context.consumers], unless they reach
     each other (they are in the same cycle). Such a root always exists, as "reaches,
@@ -224,23 +316,14 @@ module CostliestFirst = ByKey (struct
 module ByDependencies (P: sig val producers: bool end)
   : WorkListHeuristic = functor (Var: VarType) ->
 struct
-  module VH = Hashtbl.Make (Var)
+  module W = Waiting (Var)
+  module VH = W.VH
   type elt = Var.t
-  type t = {
-    waiting: Var.t DynArray.t; (** In the order in which they were added *)
-    is_waiting: unit VH.t;
-    context: Var.t context;
-  }
+  type t = { waiting: W.t; context: Var.t context }
 
   let needs = { needs_nothing with need_dependencies = true }
-  let create context =
-    { waiting = DynArray.create (); is_waiting = VH.create 10; context }
-
-  let add w x _ =
-    if not (VH.mem w.is_waiting x) then (
-      VH.replace w.is_waiting x ();
-      DynArray.add w.waiting x
-    )
+  let create context = { waiting = W.create (); context }
+  let add w x _ = W.add w.waiting x
 
   (** The roots that can be reached from x via at least one edge. *)
   let reachable w x =
@@ -257,16 +340,16 @@ struct
     seen
 
   let choose w =
-    let n = DynArray.length w.waiting in
+    let n = W.length w.waiting in
     if n = 0 then
       None
     else (
-      let reach = Array.init n (fun i -> reachable w (DynArray.get w.waiting i)) in
+      let reach = Array.init n (fun i -> reachable w (W.get w.waiting i)) in
       (* Whether root a reaches root b, but b does not reach a back
          (indices into waiting). *)
       let strictly_reaches a b =
-        VH.mem reach.(a) (DynArray.get w.waiting b)
-        && not (VH.mem reach.(b) (DynArray.get w.waiting a))
+        VH.mem reach.(a) (W.get w.waiting b)
+        && not (VH.mem reach.(b) (W.get w.waiting a))
       in
       (* Whether root i has to wait for another waiting root:
          for producers first, if another root strictly reaches it (produces for it);
@@ -285,16 +368,69 @@ struct
       let rec first i =
         if i = n - 1 || not (blocked i) then i else first (i + 1)
       in
-      let i = first 0 in
-      let x = DynArray.get w.waiting i in
-      DynArray.delete w.waiting i;
-      VH.remove w.is_waiting x;
-      Some x
+      Some (W.take w.waiting (first 0))
+    )
+end
+
+(** Destabilizers first ([most = true]): chooses the waiting root with the largest score,
+    where the score of a root is how often its tasks have destabilized the other waiting
+    roots, minus how often their tasks have destabilized it ([context.destabilizations]).
+    A destabilization only happens if a task changed a value, so the score counts changes
+    that actually made another root run again, and how often. The idea: a root that keeps
+    invalidating the others should run before them, so that they see its changes once,
+    instead of running and being invalidated again.
+    Unlike [ByDependencies], this also orders roots that destabilize each other,
+    by which direction happened more often.
+    Destabilizers last ([most = false]), the opposite: chooses the smallest score.
+    Ties (e.g. among roots that have not run yet) are broken in FIFO order.
+    A root that is added while it is already waiting keeps its position.
+    Each choose costs O(n^2) hash table lookups for n waiting roots. *)
+module ByDestabilizations (P: sig val most: bool end)
+  : WorkListHeuristic = functor (Var: VarType) ->
+struct
+  module W = Waiting (Var)
+  type elt = Var.t
+  type t = { waiting: W.t; context: Var.t context }
+
+  let needs = { needs_nothing with need_destabilizations = true }
+  let create context = { waiting = W.create (); context }
+  let add w x _ = W.add w.waiting x
+
+  let choose w =
+    let n = W.length w.waiting in
+    if n = 0 then
+      None
+    else (
+      let d = w.context.destabilizations in
+      let score i =
+        let x = W.get w.waiting i in
+        let rec sum j acc =
+          if j = n then acc
+          else if j = i then sum (j + 1) acc
+          else (
+            let y = W.get w.waiting j in
+            sum (j + 1) (acc + d x y - d y x)
+          )
+        in
+        sum 0 0
+      in
+      let better a b = if P.most then a > b else a < b in
+      (* The first root with the best score, so that ties are broken in FIFO order. *)
+      let rec best i (bi, bs) =
+        if i = n then bi
+        else (
+          let si = score i in
+          best (i + 1) (if better si bs then (i, si) else (bi, bs))
+        )
+      in
+      Some (W.take w.waiting (best 1 (0, score 0)))
     )
 end
 
 module ProducersFirst = ByDependencies (struct let producers = true end)
 module ConsumersFirst = ByDependencies (struct let producers = false end)
+module DestabilizersFirst = ByDestabilizations (struct let most = true end)
+module DestabilizersLast = ByDestabilizations (struct let most = false end)
 
 (** @param WL The heuristic that decides in which order the tasks are executed. *)
 module Base (WL: WorkListHeuristic) : DemandEqSolver =
@@ -336,6 +472,9 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
       let depths : int HM.t = HM.create 10 in
       (* Right-hand side evaluations of the last task of each root *)
       let costs : int HM.t = HM.create 10 in
+      (* Number of executed tasks so far, and the number of the last task of each root *)
+      let tasks_run = ref 0 in
+      let last_runs : int HM.t = HM.create 10 in
       (* Dependencies are guarded by need_dependencies:
          they cost hash table updates on every side effect and query. *)
       (* Globals written by the tasks of each root *)
@@ -358,7 +497,26 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
       in
 
       (** Roots of the tasks that are waiting to be executed. *)
-      let work = Work.create { consumers } in
+      (* How often the tasks of each root have destabilized each other root,
+         only collected if [Work.needs.need_destabilizations] *)
+      let destabs : int HM.t HM.t = HM.create 10 in
+      let destabilizations r r' =
+        match HM.find_option destabs r with
+        | Some counts -> HM.find_default counts r' 0
+        | None -> 0
+      in
+      (* Record that the current task destabilized the root y. *)
+      let record_destabilization y =
+        match !current_root with
+        | Some r when not (S.Var.equal r y) ->
+          let counts = match HM.find_option destabs r with
+            | Some counts -> counts
+            | None -> let counts = HM.create 10 in HM.replace destabs r counts; counts
+          in
+          HM.replace counts y (HM.find_default counts y 0 + 1)
+        | _ -> ()
+      in
+      let work = Work.create { consumers; destabilizations } in
 
       print_solver_stats := (fun () ->
           Logs.debug "|data|=%d" (HM.length data);
@@ -422,6 +580,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
           invalidations = !(init y).invalidations;
           depth = if Work.needs.need_depth then HM.find_default depths y 0 else 0;
           last_cost = if Work.needs.need_cost then HM.find_default costs y 0 else 0;
+          last_run = if Work.needs.need_last_run then HM.find_default last_runs y 0 else 0;
         } in
         Work.add work y info
       in
@@ -460,7 +619,10 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
                   S.Var.pretty_trace y !y_ref.top_level !y_ref.called;
               y_ref := { !y_ref with stable = false; infl = VS.empty;
                                      invalidations = !y_ref.invalidations + 1 };
-              if !y_ref.top_level then add_task y;
+              if !y_ref.top_level then (
+                if Work.needs.need_destabilizations then record_destabilization y;
+                add_task y
+              );
               destabilize inner_w
             )
           ) w
@@ -646,6 +808,9 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
             trace "thread_pool" "starting task to iterate %a" S.Var.pretty_trace y;
           y_ref := { !y_ref with stable = true; called = true };
           current_root := Some y;
+          (* A skipped task (stable root) does not count as fired. *)
+          incr tasks_run;
+          if Work.needs.need_last_run then HM.replace last_runs y !tasks_run;
           let rhs_before = !rhs_evals in
           iterate None y;
           if Work.needs.need_cost then HM.replace costs y (!rhs_evals - rhs_before);
@@ -748,3 +913,11 @@ let () =
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (CostliestFirst))));
   Selector.add_solver ("td_worklist_consumers_first",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ConsumersFirst))));
+  Selector.add_solver ("td_worklist_destabilizers_first",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (DestabilizersFirst))));
+  Selector.add_solver ("td_worklist_destabilizers_last",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (DestabilizersLast))));
+  Selector.add_solver ("td_worklist_least_recently_fired",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (LeastRecentlyFired))));
+  Selector.add_solver ("td_worklist_most_recently_fired",
+    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (MostRecentlyFired))));
