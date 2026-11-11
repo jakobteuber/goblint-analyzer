@@ -38,7 +38,6 @@ type needs = {
   need_depth: bool;
   need_cost: bool;
   need_last_run: bool;
-  need_dependencies: bool;
   need_destabilizations: bool;
 }
 
@@ -46,7 +45,6 @@ let needs_nothing = {
   need_depth = false;
   need_cost = false;
   need_last_run = false;
-  need_dependencies = false;
   need_destabilizations = false;
 }
 
@@ -54,10 +52,6 @@ let needs_nothing = {
     for heuristics that need more than [info].
     It may change between calls of [choose]. *)
 type 'v context = {
-  consumers: 'v -> 'v list;
-  (** Roots whose tasks have read a global that the task of the given root has written,
-      without the root itself.
-      Only collected if [need_dependencies], [] otherwise. *)
   destabilizations: 'v -> 'v -> int;
   (** [destabilizations r r'] is how often the tasks of root r have destabilized root r',
       i.e. changed a value that r' had used, so that r' had to run again (0 if r = r').
@@ -302,76 +296,6 @@ struct
     x
 end
 
-(** Producers before consumers ([producers = true]): chooses a waiting root that no
-    other waiting root can reach in the graph of [context.consumers], unless they reach
-    each other (they are in the same cycle). Such a root always exists, as "reaches,
-    but is not reached back" is a strict partial order.
-    Consumers before producers ([producers = false]), the opposite: chooses a waiting root
-    that reaches no other waiting root in that graph, unless they reach each other.
-    Ties are broken in FIFO order.
-    A root that is added while it is already waiting keeps its position.
-    Each choose costs O(n * (r + e)) for n waiting roots, r roots and e edges in the
-    graph:
-    fine for the few roots of thread creations, but a lot for programs with many roots. *)
-module ByDependencies (P: sig val producers: bool end)
-  : WorkListHeuristic = functor (Var: VarType) ->
-struct
-  module W = Waiting (Var)
-  module VH = W.VH
-  type elt = Var.t
-  type t = { waiting: W.t; context: Var.t context }
-
-  let needs = { needs_nothing with need_dependencies = true }
-  let create context = { waiting = W.create (); context }
-  let add w x _ = W.add w.waiting x
-
-  (** The roots that can be reached from x via at least one edge. *)
-  let reachable w x =
-    let seen = VH.create 10 in
-    let rec visit y =
-      List.iter (fun z ->
-          if not (VH.mem seen z) then (
-            VH.replace seen z ();
-            visit z
-          )
-        ) (w.context.consumers y)
-    in
-    visit x;
-    seen
-
-  let choose w =
-    let n = W.length w.waiting in
-    if n = 0 then
-      None
-    else (
-      let reach = Array.init n (fun i -> reachable w (W.get w.waiting i)) in
-      (* Whether root a reaches root b, but b does not reach a back
-         (indices into waiting). *)
-      let strictly_reaches a b =
-        VH.mem reach.(a) (W.get w.waiting b)
-        && not (VH.mem reach.(b) (W.get w.waiting a))
-      in
-      (* Whether root i has to wait for another waiting root:
-         for producers first, if another root strictly reaches it (produces for it);
-         for consumers first, if it strictly reaches another root
-         (another root consumes from it). *)
-      let blocked i =
-        let waits_for j =
-          if P.producers then strictly_reaches j i else strictly_reaches i j
-        in
-        let rec check j =
-          j < n && ((j <> i && waits_for j) || check (j + 1))
-        in
-        check 0
-      in
-      (* Never runs past the end, as one of the roots is not blocked by any other. *)
-      let rec first i =
-        if i = n - 1 || not (blocked i) then i else first (i + 1)
-      in
-      Some (W.take w.waiting (first 0))
-    )
-end
-
 (** Destabilizers first ([most = true]): chooses the waiting root with the largest score,
     where the score of a root is how often its tasks have destabilized the other waiting
     roots, minus how often their tasks have destabilized it ([context.destabilizations]).
@@ -379,7 +303,7 @@ end
     that actually made another root run again, and how often. The idea: a root that keeps
     invalidating the others should run before them, so that they see its changes once,
     instead of running and being invalidated again.
-    Unlike [ByDependencies], this also orders roots that destabilize each other,
+    This also orders roots that depend on each other in both directions,
     by which direction happened more often.
     Destabilizers last ([most = false]), the opposite: chooses the smallest score.
     Ties (e.g. among roots that have not run yet) are broken in FIFO order.
@@ -427,8 +351,6 @@ struct
     )
 end
 
-module ProducersFirst = ByDependencies (struct let producers = true end)
-module ConsumersFirst = ByDependencies (struct let producers = false end)
 module DestabilizersFirst = ByDestabilizations (struct let most = true end)
 module DestabilizersLast = ByDestabilizations (struct let most = false end)
 
@@ -475,27 +397,6 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
       (* Number of executed tasks so far, and the number of the last task of each root *)
       let tasks_run = ref 0 in
       let last_runs : int HM.t = HM.create 10 in
-      (* Dependencies are guarded by need_dependencies:
-         they cost hash table updates on every side effect and query. *)
-      (* Globals written by the tasks of each root *)
-      let writes : VS.t HM.t = HM.create 10 in
-      (* Roots whose tasks read each global *)
-      let readers : VS.t HM.t = HM.create 10 in
-
-      (* Only called inside a task, so there is a current root. *)
-      let record_access table key value =
-        HM.replace table key (VS.add value (HM.find_default table key VS.empty))
-      in
-      let record_write g = record_access writes (Option.get !current_root) g in
-      let record_read g = record_access readers g (Option.get !current_root) in
-      let consumers r =
-        let rs =
-          VS.fold (fun g acc -> VS.union (HM.find_default readers g VS.empty) acc)
-            (HM.find_default writes r VS.empty) VS.empty
-        in
-        VS.elements (VS.remove r rs)
-      in
-
       (** Roots of the tasks that are waiting to be executed. *)
       (* How often the tasks of each root have destabilized each other root,
          only collected if [Work.needs.need_destabilizations] *)
@@ -516,7 +417,7 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
           HM.replace counts y (HM.find_default counts y 0 + 1)
         | _ -> ()
       in
-      let work = Work.create { consumers; destabilizations } in
+      let work = Work.create { destabilizations } in
 
       print_solver_stats := (fun () ->
           Logs.debug "|data|=%d" (HM.length data);
@@ -649,16 +550,6 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
             trace "sol_query" "entering query for %a; stable %b; called %b"
               S.Var.pretty_trace y !y_ref.stable !y_ref.called;
           get_var_event y;
-          (* As in td_parallel_base, infl is added before y is iterated:
-             if y changes during its own iteration, x is destabilized and evaluated again,
-             which may narrow x if it is a widening point.
-             Adding it only afterwards saves these evaluations, but loses precision,
-             e.g. 12-lockset_inter_threaded_lock_transitive_racefree.c
-             in tests/regression/53-races-mhp. *)
-          add_infl y x;
-          (* Only globals connect tasks:
-             locals that another root's task solved are not recorded. *)
-          if Work.needs.need_dependencies && is_global y then record_read y;
           if !y_ref.called then (
             if tracing && not !y_ref.wpoint then
               trace "wpoint" "query adding wpoint %a" S.Var.pretty_trace y;
@@ -669,10 +560,15 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
             y_ref := { !y_ref with stable = true }
           ) else (
             y_ref := { !y_ref with stable = true; called = true };
-            (* Destabilizing y during its iteration clears its infl,
-               so iterate adds x again at its end. *)
             iterate (Some x) y
           );
+          (* As in td_simplified_ref, infl is added after y has been solved.
+             td_parallel_base adds it before (at the beginning of query): then x is destabilized
+             and evaluated again if y changes during its own iteration.
+             x reads the final value of y either way; on SV-COMP, adding it afterwards gave the same
+             results on every task with about 25% fewer right-hand side evaluations
+             (td_worklist_fifo, tests/suite_result/compare_svcomp_late_infl and work_svcomp_late_infl). *)
+          add_infl y x;
           let tmp = !y_ref.value in
           if tracing then
             trace "answer" "exiting query for %a\nanswer: %a"
@@ -687,9 +583,6 @@ module Base (WL: WorkListHeuristic) : DemandEqSolver =
         *)
         let side x y d =
           assert (is_global y);
-          (* Also if d adds nothing:
-             the task produces y, its next contribution may be new. *)
-          if Work.needs.need_dependencies then record_write y;
           let y_ref = init y in
           if tracing then
             trace "side" "side to %a (wpx: %b) from %a ## value: %a"
@@ -905,14 +798,10 @@ let () =
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ShallowestCreated))));
   Selector.add_solver ("td_worklist_cheapest_first",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (CheapestFirst))));
-  Selector.add_solver ("td_worklist_producers_first",
-    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ProducersFirst))));
   Selector.add_solver ("td_worklist_deepest_created",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (DeepestCreated))));
   Selector.add_solver ("td_worklist_costliest_first",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (CostliestFirst))));
-  Selector.add_solver ("td_worklist_consumers_first",
-    (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (ConsumersFirst))));
   Selector.add_solver ("td_worklist_destabilizers_first",
     (module PostSolver.DemandEqIncrSolverFromDemandEqSolver (Base (DestabilizersFirst))));
   Selector.add_solver ("td_worklist_destabilizers_last",

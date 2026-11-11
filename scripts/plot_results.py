@@ -6,7 +6,8 @@ Usage: ./scripts/plot_results.py [--work CSV ...] [--compare CSV ...] [--timing 
 Without CSV arguments, all results under tests/suite_result are plotted:
   */compare.csv                    precision: per pair of solvers, on how many tests one is more precise than the other
   */work.csv (or work_partial.csv) work: per-test ratio of right-hand side evaluations (or eval+iterate calls, for older
-                                   results without rhs) to the baseline td_simplified_ref, and failed runs.
+                                   results without rhs) to the baseline td_worklist_fifo, and failed runs.
+                                   The solvers are split into panels, one per heuristic with both its directions (see PANELS).
                                    Repeated runs of a solver appear as its best and worst run per test (e.g. td_worklist_random#best),
                                    the number of runs is taken from work_runs.csv next to work.csv.
   */timing.csv                     time: wall time of solve per input, solver and run; the random orders (one per seed) side by side
@@ -38,39 +39,33 @@ from matplotlib.colors import LinearSegmentedColormap
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "tests" / "suite_result"
-BASELINE = "td_simplified_ref"
+BASELINE = "td_worklist_fifo"
+RANDOM = "td_worklist_random"
 
-# Colors: the validated categorical palette of the dataviz guidelines, in its slot order. A solver keeps its color in
-# every plot; all runs of td_worklist_random share one color. The order of the entries is the order of the solvers in the plots.
-# The baseline is gray, as it is drawn as a reference (the ratio 1) rather than as a series.
-# The opposite variants of a heuristic (OPPOSITES) have no slot of their own (there are no more than 8 categorical hues):
-# they share the color of their heuristic and are told apart by a dotted line and triangle markers.
-SOLVER_COLORS = {
-    "td_worklist_lifo": "#2a78d6",  # blue
-    "td_worklist_fifo": "#eb6834",  # orange
-    "td_worklist_most_invalidated": "#1baf7a",  # aqua
-    "td_worklist_random": "#eda100",  # yellow
-    "td_worklist_least_invalidated": "#e87ba4",  # magenta
-    "td_worklist_shallowest_created": "#008300",  # green
-    "td_worklist_deepest_created": "#008300",
-    "td_worklist_cheapest_first": "#6250d6",  # violet
-    "td_worklist_costliest_first": "#6250d6",
-    "td_worklist_producers_first": "#e34948",  # red
-    "td_worklist_consumers_first": "#e34948",
-    # No hue left: the dark neutral ink, which is not a categorical slot (see OTHER_COLOR).
-    "td_worklist_destabilizers_first": "#52514e",
-    "td_worklist_destabilizers_last": "#52514e",
-    BASELINE: "#898781",  # gray
-}
-# Opposite variant -> the heuristic whose color it shares.
-OPPOSITES = {
-    "td_worklist_deepest_created": "td_worklist_shallowest_created",
-    "td_worklist_costliest_first": "td_worklist_cheapest_first",
-    "td_worklist_consumers_first": "td_worklist_producers_first",
-    "td_worklist_destabilizers_last": "td_worklist_destabilizers_first",
-    "td_worklist_most_recently_fired": "td_worklist_least_recently_fired",
-}
-OTHER_COLOR = "#52514e"  # solvers without a slot, e.g. td_parallel_base
+# The solvers are shown in panels (small multiples), not all in one plot: there are more solvers than categorical hues,
+# and the dataviz guidelines validate only the first three slots of the palette all-pairs (for lines, dots and small
+# multiples, where every pair of colors in a panel can meet). Each panel holds one heuristic in both directions
+# (FIFO and LIFO are the two directions of insertion order), so a panel never has more than three hues.
+# td_simplified_ref has a panel of its own: it has no work list and is unrelated to the heuristics.
+# Colors therefore mark the role in a panel, not the solver: the first-named direction is blue, its opposite orange
+# (also dotted with triangles, so that the direction does not depend on color alone), a third solver aqua.
+# The random orders are a neutral band (from their best to their worst run) behind every panel, and the baseline is
+# the reference line at 1 (or the x axis), so that every panel is read against the same references.
+PANELS = [
+    ("Insertion order", ["td_worklist_fifo", "td_worklist_lifo"]),
+    ("No work list", ["td_simplified_ref"]),
+    ("Invalidations", ["td_worklist_most_invalidated", "td_worklist_least_invalidated"]),
+    ("Creation depth", ["td_worklist_shallowest_created", "td_worklist_deepest_created"]),
+    ("Cost of the last task", ["td_worklist_cheapest_first", "td_worklist_costliest_first"]),
+    ("Destabilizations", ["td_worklist_destabilizers_first", "td_worklist_destabilizers_last"]),
+    ("Recency", ["td_worklist_least_recently_fired", "td_worklist_most_recently_fired"]),
+]
+ROLE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]  # categorical slots 1-3: blue, orange, aqua
+# The second solver of a heuristic panel: the opposite direction of the first.
+OPPOSITES = {members[1] for _, members in PANELS if len(members) > 1}
+# Plot order: the panels in order, the random orders after the reference solvers (insertion order, no work list).
+ORDER = PANELS[0][1] + PANELS[1][1] + [RANDOM] + [s for _, members in PANELS[2:] for s in members]
+RANDOM_BAND = "#e1e0d9"  # neutral, behind the series
 # Short names for the plots.
 SOLVER_LABELS = {
     "td_simplified_ref": "simplified_ref (no work list)",
@@ -82,8 +77,6 @@ SOLVER_LABELS = {
     "td_worklist_deepest_created": "deepest created",
     "td_worklist_cheapest_first": "cheapest first",
     "td_worklist_costliest_first": "costliest first",
-    "td_worklist_producers_first": "producers first",
-    "td_worklist_consumers_first": "consumers first",
     "td_worklist_destabilizers_first": "destabilizers first",
     "td_worklist_destabilizers_last": "destabilizers last",
     "td_worklist_least_recently_fired": "least recently fired",
@@ -133,7 +126,35 @@ def base_name(solver):
 
 
 def solver_color(solver):
-    return SOLVER_COLORS.get(base_name(solver), OTHER_COLOR)
+    """Color of the role of a solver in its panel (see PANELS); the random orders: the first slot."""
+    name = base_name(solver)
+    for _, members in PANELS:
+        if name in members:
+            return ROLE_COLORS[members.index(name)]
+    return ROLE_COLORS[0]
+
+
+def panels(solvers):
+    """The panels (title, members) with the given solvers, in the order of PANELS, without empty panels and random orders.
+    Each member keeps its role (its index in the panel); a missing member is None, so that the roles stay aligned.
+    Solvers that are in no panel (e.g. td_parallel_base) follow in panels of up to three."""
+    present = set(solvers)
+    result = []
+    for title, members in PANELS:
+        shown = [s if s in present else None for s in members]
+        while shown and shown[-1] is None:
+            shown.pop()
+        if any(shown):
+            result.append((title, shown))
+    known = {s for _, members in PANELS for s in members}
+    rest = [s for s in solvers if s not in known and base_name(s) != RANDOM]
+    for i in range(0, len(rest), 3):
+        result.append(("Other", rest[i:i + 3]))
+    return result
+
+
+def role_color(i):
+    return ROLE_COLORS[i % len(ROLE_COLORS)]
 
 
 def solver_label(solver, runs=None):
@@ -159,8 +180,8 @@ def solver_style(solver):
 
 
 def solver_order(solvers):
-    """Baseline first, then the known solvers in their slot order (best before worst, seeds numerically), then the others."""
-    known = list(SOLVER_COLORS)
+    """Baseline first, then the known solvers in the order of the panels (best before worst, seeds numerically), then the others."""
+    known = ORDER
 
     def key(s):
         name, _, tag = s.partition("#")
@@ -272,24 +293,17 @@ def plot_work(csv, out, formats):
     note += f"Tests on which the solver and the baseline succeeded: {counts_note}.\n{data_note(csv)}"
     print(f"{name}: {metric}, baseline {base}, common tests {counts_note}")
 
+    # The random orders, as a band from their best to their worst run behind the panels (if there are both).
+    band = None
+    if f"{RANDOM}#best" in ratios and f"{RANDOM}#worst" in ratios:
+        band = (ratios[f"{RANDOM}#best"], ratios[f"{RANDOM}#worst"], f"random, best–worst of {runs.get(RANDOM, '?')}")
+    grid = panels(others)
+    pairs_note = ("Colors mark the direction within a panel, not the heuristic: blue the first-named, "
+                  "orange (dotted lines, triangles) the opposite.\n")
+
     # 1. Distribution of the per-test ratios: how often and by how much each solver does more or less work.
-    fig, ax = plt.subplots(figsize=(7, 4.6))
-    for s in others:
-        r = np.sort(ratios[s].to_numpy())
-        y = np.arange(1, len(r) + 1) / len(r)
-        gm = math.exp(np.log(r).mean())
-        ax.step(r, y, where="post", color=solver_color(s), linestyle=solver_style(s)["linestyle"], linewidth=1.6,
-                label=f"{label(s)} ({gm:.3f})")
-    ax.axvline(1, color=INK_MUTED, linewidth=1)
-    log2_ratio_axis(ax)
-    ax.set_xlabel(f"{metric_label} relative to {base_label}, per test (log scale)")
-    ax.set_ylabel("fraction of tests")
-    ax.set_ylim(0, 1)
-    ax.set_title(f"Work of the work-list heuristics relative to {base_label}", pad=8)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), title="solver (geometric mean\nof the ratio)", title_fontsize=8, fontsize=8,
-              alignment="left")
-    footnote(ax, "Left of 1: less work than the baseline.\n" + note)
-    save(fig, out, f"{name}_work-ratio-cdf", formats)
+    plot_ratio_cdf(ratios, grid, band, base_label, metric_label, label,
+                   "Left of 1: less work than the baseline. " + pairs_note + note, out, f"{name}_work-ratio-cdf", formats)
 
     # 2. Work of each solver against a baseline, per test: does the difference grow with the size of the problem?
     # Once against the default baseline, and once against each other solver.
@@ -303,25 +317,10 @@ def plot_work(csv, out, formats):
         gm = pd.DataFrame({s: np.exp(np.log(r).groupby(r.index.str.split("/").str[0]).mean()) for s, r in ratios.items()})
         sizes = df.groupby("group")["test"].nunique()
         gm = gm.reindex(sizes.sort_values().index)  # largest groups on top
-        row = max(0.4, 0.05 * len(others))  # room for one dot per solver in each row
-        fig, ax = plt.subplots(figsize=(7.5, row * len(gm) + 1.8))
-        y = np.arange(len(gm))
-        offsets = np.linspace(-0.3, 0.3, len(others)) if len(others) > 1 else [0]
-        for off, s in zip(offsets, others):
-            filled = solver_style(s)["filled"]
-            ax.scatter(gm[s], y + off, s=22, zorder=3, label=label(s), marker=solver_style(s)["marker"],
-                       color=solver_color(s) if filled else SURFACE, edgecolors=solver_color(s) if not filled else SURFACE,
-                       linewidths=1.2 if not filled else 0.8)
-        ax.axvline(1, color=INK_MUTED, linewidth=1)
-        ax.set_yticks(y, [f"{g} ({sizes[g]})" for g in gm.index])
-        ax.set_ylim(-0.6, len(gm) - 0.4)
-        ax.grid(axis="y", visible=False)
-        log2_ratio_axis(ax)
-        ax.set_xlabel(f"geometric mean of {metric_label} relative to {base_label} (log scale)")
-        ax.set_title(f"Work relative to {base_label}, per test group", pad=8 + 14 * math.ceil(len(others) / 3))
-        legend_above(ax, 3, fontsize=8)
-        footnote(ax, "Number of tests per group in parentheses; no dot for a solver: it failed on all tests of the group.\n" + note)
-        save(fig, out, f"{name}_work-per-group", formats)
+        plot_per_group(gm, sizes, grid, band is not None and f"random, best–worst of {runs.get(RANDOM, '?')}", base_label,
+                       metric_label, label,
+                       "Number of tests per group in parentheses; no dot for a solver: it failed on all tests of the group.\n"
+                       + pairs_note + note, out, f"{name}_work-per-group", formats)
 
     # 4. Failed runs (timeouts and errors) per solver, if any.
     status = df.groupby(["solver", "status"]).size().unstack(fill_value=0)
@@ -352,36 +351,154 @@ def file_label(solver):
     return solver.removeprefix("td_worklist_").removeprefix("td_").replace("#", "-")
 
 
+def panel_grid(n, ncols, width, height):
+    """Figure with n panels in ncols columns, shared axes; the unused cells are hidden.
+    Returns the figure and the visible axes; each visible panel at the bottom of its column shows its x tick labels."""
+    nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width * ncols, height * nrows), sharex=True, sharey=True, squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.set_visible(False)
+    visible = list(axes.flat[:n])
+    bottom = [ax for i, ax in enumerate(visible) if i + ncols >= n]
+    for ax in bottom:
+        ax.tick_params(labelbottom=True)
+    return fig, visible, bottom
+
+
+def plot_ratio_cdf(ratios, grid, band, base_label, metric_label, label, note, out, filename, formats):
+    """One panel per heuristic (see PANELS): the distribution of its per-test ratios to the baseline, in both directions,
+    in front of the band of the random orders. ratios: per solver, the ratio per test."""
+    fig, axes, bottom = panel_grid(len(grid), 2, 4.6, 2.7)
+    values = [r for s, r in ratios.items()]
+    lo = min(r.min() for r in values)
+    hi = max(r.max() for r in values)
+    q = np.linspace(0, 1, 401)
+    for ax, (title, members) in zip(axes, grid):
+        if band:
+            best, worst, band_label = band
+            ax.fill_betweenx(q, np.quantile(best, q), np.quantile(worst, q), color=RANDOM_BAND, linewidth=0, zorder=1,
+                             label=band_label)
+        for i, s in enumerate(members):
+            if s is None:
+                continue
+            r = np.sort(ratios[s].to_numpy())
+            y = np.arange(1, len(r) + 1) / len(r)
+            gm = math.exp(np.log(r).mean())
+            ax.step(r, y, where="post", color=role_color(i), linestyle=solver_style(s)["linestyle"], linewidth=1.6, zorder=3,
+                    label=f"{label(s)} ({gm:.3f})")
+        ax.axvline(1, color=INK_MUTED, linewidth=1, zorder=2)
+        ax.set_title(title, fontsize=10)
+        ax.legend(loc="lower right", fontsize=7.5, handlelength=2.2)  # right of 1 at the bottom: no curves there
+    axes[0].set_xlim(lo / 1.05, hi * 1.05)
+    axes[0].set_ylim(0, 1)
+    log2_ratio_axis(axes[0])
+    for ax in bottom:
+        ax.set_xlabel(f"{metric_label} relative to {base_label}\nper test (log scale)")
+    for ax in axes[::2]:
+        ax.set_ylabel("fraction of tests")
+    fig.suptitle(f"Work of the work-list heuristics relative to {base_label}", x=0.01, ha="left", fontweight="bold", color=INK,
+                 fontsize=11)
+    fig.tight_layout()
+    footnote(min(bottom, key=lambda a: a.get_position().x0), "In parentheses: geometric mean of the ratio. " + note)
+    save(fig, out, filename, formats)
+
+
+def plot_per_group(gm, sizes, grid, band_label, base_label, metric_label, label, note, out, filename, formats):
+    """One panel per heuristic (see PANELS): per test group, the geometric mean of the ratio to the baseline,
+    in front of the range of the random orders. gm: per group (rows) and solver (columns)."""
+    fig, axes, bottom = panel_grid(len(grid), 2, 4.6, 0.32 * len(gm) + 1.2)
+    y = np.arange(len(gm))
+    for ax, (title, members) in zip(axes, grid):
+        if band_label:
+            ax.hlines(y, gm[f"{RANDOM}#best"], gm[f"{RANDOM}#worst"], color=RANDOM_BAND, linewidth=5, zorder=1, label=band_label)
+        shown = [(i, s) for i, s in enumerate(members) if s is not None]
+        offsets = np.linspace(-0.15, 0.15, len(shown)) if len(shown) > 1 else [0]
+        for off, (i, s) in zip(offsets, shown):
+            ax.scatter(gm[s], y + off, s=22, zorder=3, label=label(s), marker=solver_style(s)["marker"], color=role_color(i),
+                       edgecolors=SURFACE, linewidths=0.8)
+        ax.axvline(1, color=INK_MUTED, linewidth=1, zorder=2)
+        ax.set_yticks(y, [f"{g} ({sizes[g]})" for g in gm.index])
+        ax.set_ylim(-0.6, len(gm) - 0.4)
+        ax.grid(axis="y", visible=False)
+        ax.set_title(title, fontsize=10, pad=6 + 12 * math.ceil((len(shown) + bool(band_label)) / 2))
+        legend_above(ax, 2, fontsize=7.5)
+    log2_ratio_axis(axes[0])
+    for ax in bottom:
+        ax.set_xlabel(f"geometric mean of {metric_label}\nrelative to {base_label} (log scale)")
+    fig.suptitle(f"Work relative to {base_label}, per test group", x=0.01, ha="left", fontweight="bold", color=INK, fontsize=11)
+    fig.tight_layout()
+    fig.subplots_adjust(top=fig.subplotpars.top - 0.4 / fig.get_figheight())  # room for the title above the panel titles
+    footnote(min(bottom, key=lambda a: a.get_position().x0), note)
+    save(fig, out, filename, formats)
+
+
+def scatter_rows(others):
+    """Layout of the scatter plots: one panel per solver, four per row. The panels of PANELS (and the random orders,
+    best and worst) follow in pairs, two pairs per row, each direction in its column; other solvers fill rows of their own.
+    Returns rows of (solver, role) or None for an empty cell."""
+    grid = panels(others)
+    rows = []
+    blocks = []
+    for title, members in grid:
+        cells = [(s, i) if s else None for i, s in enumerate(members)]
+        if title == "Other":
+            rows.append(cells + [None] * (4 - len(cells)))
+        else:
+            blocks.append(cells + [None] * (2 - len(cells)))
+    random = [(s, i) if s in others else None for i, s in enumerate([f"{RANDOM}#best", f"{RANDOM}#worst"])]
+    if any(random):
+        blocks.insert(2 if len(blocks) >= 2 else len(blocks), random)  # after insertion order and no work list
+    for i in range(0, len(blocks), 2):
+        row = blocks[i] + (blocks[i + 1] if i + 1 < len(blocks) else [None, None])
+        rows.append(row)
+    return rows
+
+
 def plot_work_per_test(ok, base, others, label, metric_label, runs, n_tests, csv, out, filename, formats):
-    """Scatter plot per solver of its work against the work of base, per test; ok: work per test (rows) and solver (columns)."""
+    """Scatter plot per solver of its work against the work of base, per test; ok: work per test (rows) and solver (columns).
+    The panels are laid out as in scatter_rows, so that both directions of a heuristic sit side by side."""
     base_label = label(base)
     pairs = {s: p[(p[base] > 0) & (p[s] > 0)] for s in others for p in [ok[[base, s]].dropna()]}
     counts = sorted({len(p) for p in pairs.values()})
     counts_note = (f"{counts[0]}" if len(counts) == 1 else f"{counts[0]} to {counts[-1]}") + f" of {n_tests}"
     note = "".join(f"{label(s + '#best')}/worst: per test, the best and the worst of {n} runs by {metric_label}.\n" for s, n in runs.items())
     note += f"Tests on which the solver and the baseline succeeded: {counts_note}.\n{data_note(csv)}"
-    ncols = min(3, len(others))
-    nrows = math.ceil(len(others) / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.1 * ncols, 2.9 * nrows), sharex=True, sharey=True, squeeze=False)
+    rows = scatter_rows(others)
+    nrows, ncols = len(rows), 4
+    fig, axes = plt.subplots(nrows, ncols, figsize=(2.7 * ncols, 2.6 * nrows), sharex=True, sharey=True, squeeze=False)
     lo = max(1, min(p.min().min() for p in pairs.values()))
     hi = max(p.max().max() for p in pairs.values())
-    for ax in axes.flat[len(others):]:
-        ax.set_visible(False)
-    for ax, s in zip(axes.flat, others):
-        ax.plot([lo, hi], [lo, hi], color=AXIS, linewidth=1, zorder=1)
-        filled = solver_style(s)["filled"]
-        ax.scatter(pairs[s][base], pairs[s][s], s=10, zorder=2, alpha=0.6, marker=solver_style(s)["marker"],
-                   color=solver_color(s) if filled else "none", edgecolors=solver_color(s), linewidths=0 if filled else 0.8)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_title(label(s), fontsize=10)
-    for ax in axes[-1]:
-        ax.set_xlabel(base_label)
-    for row in axes:
-        row[0].set_ylabel("solver")
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row):
+            ax = axes[r][c]
+            if cell is None:
+                ax.set_visible(False)
+                continue
+            s, role = cell
+            ax.plot([lo, hi], [lo, hi], color=AXIS, linewidth=1, zorder=1)
+            filled = solver_style(s)["filled"]
+            ax.scatter(pairs[s][base], pairs[s][s], s=9, zorder=2, alpha=0.6, marker=solver_style(s)["marker"],
+                       color=role_color(role) if filled else "none", edgecolors=role_color(role), linewidths=0 if filled else 0.8)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_title(label(s), fontsize=9.5)
+    # x tick labels and label for every panel at the bottom of its column, y label in the first visible panel of a row.
+    for c in range(ncols):
+        col = [axes[r][c] for r in range(nrows) if rows[r][c] is not None]
+        if col:
+            col[-1].tick_params(labelbottom=True)
+            col[-1].set_xlabel(base_label)
+    for r in range(nrows):
+        first = next((axes[r][c] for c in range(ncols) if rows[r][c] is not None), None)
+        if first:
+            first.tick_params(labelleft=True)
+            first.set_ylabel("solver")
     fig.suptitle(f"{metric_label.capitalize()} per test, against {base_label}", x=0.01, ha="left", fontweight="bold", color=INK, fontsize=11)
     fig.tight_layout()
-    footnote(axes[-1][0], "One dot per test, both axes log scale. Above the diagonal: more work than the baseline.\n" + note)
+    bottom = next(axes[r][c] for r in reversed(range(nrows)) for c in range(ncols) if rows[r][c] is not None)
+    footnote(bottom, "One dot per test, both axes log scale. Above the diagonal: more work than the baseline.\n"
+             "Both directions of a heuristic side by side; blue the first-named direction, orange (triangles) the opposite.\n"
+             + note)
     save(fig, out, filename, formats)
 
 

@@ -5,7 +5,6 @@ The solver `td_worklist` executes its tasks in an order chosen by a heuristic:
 LIFO (`td_worklist_lifo`), FIFO (`td_worklist_fifo`), most or least invalidated root first (`td_worklist_most_invalidated`, `td_worklist_least_invalidated`),
 shallowest or deepest creation depth first (`td_worklist_shallowest_created`, `td_worklist_deepest_created`),
 cheapest or costliest last task first (`td_worklist_cheapest_first`, `td_worklist_costliest_first`),
-producers before consumers or the other way round (`td_worklist_producers_first`, `td_worklist_consumers_first`),
 roots that destabilized the other waiting roots more often than the other way round first or last (`td_worklist_destabilizers_first`, `td_worklist_destabilizers_last`),
 least or most recently fired root first, i.e. the root whose last task ran longest ago or most recently (`td_worklist_least_recently_fired`, `td_worklist_most_recently_fired`)
 or a random order (`td_worklist_random`).

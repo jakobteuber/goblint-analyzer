@@ -34,6 +34,9 @@
 #   GOBLINT  Goblint binary (default: ./goblint)
 #   SVCOMP_CONF      configuration for SV-COMP tasks (default: conf/svcomp23.json)
 #   SVCOMP_PROPERTY  property file for SV-COMP tasks, relative to the task directory (default: ../properties/no-data-race.prp)
+#   REPORT_ONLY      if set, run nothing: only rewrite $OUT/report.txt from the existing $OUT/work.csv, e.g. after adding the
+#                    rows of further solvers or to change the baseline (the first of SOLVERS). SOLVERS must name the solvers
+#                    of work.csv, with RANDOM_RUNS/RANDOM_SEEDS as in the run.
 #
 # Output:
 #   $OUT/work.csv     one row per test and solver: status (ok, timeout, error), eval and iterate calls, right-hand side evaluations;
@@ -64,6 +67,7 @@ done
 TIMEOUT=${TIMEOUT:-120}
 OUT=$(realpath -m "${OUT:-$ROOT/tests/suite_result/solver_work}")
 
+if [ -z "${REPORT_ONLY:-}" ]; then
 rm -rf "$OUT"
 mkdir -p "$OUT/logs" "$OUT/rows" "$OUT/goblint-dirs"
 discover_tests "$@"
@@ -139,6 +143,8 @@ END {
 }' "$OUT/work_runs.csv" | { read -r header; echo "$header"; sort; } > "$OUT/work.csv"
 # Without labelled runs, work_runs.csv is the same as work.csv.
 cmp -s "$OUT/work.csv" "$OUT/work_runs.csv" && rm "$OUT/work_runs.csv"
+
+fi
 
 # The report only uses tests on which all solvers succeeded, so that the totals are comparable.
 {
