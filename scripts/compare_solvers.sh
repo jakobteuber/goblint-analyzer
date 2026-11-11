@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compare the precision of solvers pairwise on the regression tests or SV-COMP tasks.
-# One Goblint run per test solves with every solver once and compares all pairs of results (Goblint's comparesolvers).
+# One Goblint run per test solves with every solver once and compares all pairs of results (Goblint's comparesolvers),
+# except pairs of repeated runs of one solver (e.g. two random orders td_worklist_random#1 and #2).
 # So the number of analyses grows linearly with the number of solvers; only the comparisons, which are cheap, grow quadratically.
 # All solvers run with warnings, so the race and deadlock globals are compared like all others
 # (with comparesolver, the second solver ran without warnings, so they had to be excluded).
@@ -17,8 +18,12 @@
 # Environment variables:
 #   SOLVERS  solvers to compare, every pair is compared once (default: DEFAULT_SOLVERS in scripts/solver_lib.sh)
 #            A solver can be given several times with a label after #; for td_worklist_random, the label is the seed.
+#            Runs of the same solver with different labels are not compared with each other.
 #   RANDOM_RUNS   number of random orders: td_worklist_random#1 ... are added to SOLVERS (default: 5)
 #   RANDOM_SEEDS  the seeds of the random orders instead (default: 1 ... RANDOM_RUNS)
+#   DIFF     if set (e.g. DIFF=1), the logs also contain the values of the differing unknowns (dbg.compare_runs.diff).
+#            Off by default: the values are only for inspection by hand, and with them the logs grow to many GB
+#            (a value is the whole state of all analyses, printed per pair of solvers); the counts are the same either way.
 #   JOBS     number of tests analyzed in parallel; the solvers of one test run one after another (default: nproc)
 #   TIMEOUT  seconds per solver: the run of a test gets TIMEOUT times the number of solvers (default: 120)
 #   OUT      output directory (default: tests/suite_result/compare_solvers)
@@ -35,7 +40,7 @@
 #                      for locals_ctx also the unknowns missing in one of the results.
 #   $OUT/summary.txt   per pair: counts of tests, and the differing tests; also printed at the end
 #   $OUT/dataset.txt   description of the inputs, for the plots
-#   $OUT/logs/         Goblint's output per test, including the differing values
+#   $OUT/logs/         Goblint's output per test, with DIFF also the differing values
 
 set -u
 
@@ -51,7 +56,19 @@ mkdir -p "$OUT/logs" "$OUT/rows" "$OUT/goblint-dirs"
 discover_tests "$@"
 
 n=${#SOLVERS[@]}
-echo "Comparing $n solvers ($((n * (n - 1) / 2)) pairs) on ${#TESTS[@]} tests with $JOBS jobs, results in $OUT"
+# Whether Goblint's comparesolvers compares the two solvers (given as in SOLVERS):
+# not if both are labelled runs of the same solver, as in control.ml.
+compared() {
+  ! [[ $1 == *#* && $2 == *#* && ${1%%#*} == "${2%%#*}" ]]
+}
+
+n_pairs=0
+for ((a = 0; a < n; a++)); do
+  for ((b = a + 1; b < n; b++)); do
+    compared "${SOLVERS[a]}" "${SOLVERS[b]}" && n_pairs=$((n_pairs + 1))
+  done
+done
+echo "Comparing $n solvers ($n_pairs pairs) on ${#TESTS[@]} tests with $JOBS jobs, results in $OUT"
 
 # Analyzes one test with all solvers, compares the results and writes one CSV row per pair.
 # Arguments: test file
@@ -68,7 +85,7 @@ run_test() {
   # PARAMs may refer to files relative to the test, so run in the test's directory (as update_suite.rb does).
   (cd "$(dirname "$file")" &&
     eval timeout "$((TIMEOUT * ${#solvers[@]}))" "$GOBLINT" "$input" "$params" $(solver_args "${solvers[0]}") \
-      --set comparesolvers "\"$list\"" --enable dbg.compare_runs.diff \
+      --set comparesolvers "\"$list\"" $([ -n "${DIFF:-}" ] && echo --enable dbg.compare_runs.diff) \
       --set goblint-dir "'$OUT/goblint-dirs/$group-$test'" "${gobopt:-}") > "$log" 2>&1
   code=$?
   rm -rf "$OUT/goblint-dirs/$group-$test"
@@ -78,7 +95,12 @@ run_test() {
     @n = () if /Comparing GlobConstrSys precision of/;
     if (/^\[Info\] (globals|locals|locals_ctx):/) { push @n, /= (\d+)/g; print join(",", @n), "\n" if @n == 14 }
   ' "$log")
-  local pairs=$((${#solvers[@]} * (${#solvers[@]} - 1) / 2))
+  local pairs=0
+  for ((i = 0; i < ${#solvers[@]}; i++)); do
+    for ((j = i + 1; j < ${#solvers[@]}; j++)); do
+      compared "${solvers[i]}" "${solvers[j]}" && pairs=$((pairs + 1))
+    done
+  done
   if [ $code -eq 124 ]; then
     status=timeout
   elif [ $code -ne 0 ] || [ ${#rows[@]} -ne $pairs ]; then
@@ -88,6 +110,7 @@ run_test() {
   fi
   for ((i = 0; i < ${#solvers[@]}; i++)); do
     for ((j = i + 1; j < ${#solvers[@]}; j++)); do
+      compared "${solvers[i]}" "${solvers[j]}" || continue
       if [ $status = ok ]; then
         echo "$id,${solvers[i]},${solvers[j]},ok,${rows[k]}"
       else
@@ -97,10 +120,10 @@ run_test() {
     done
   done > "$OUT/rows/$group-$test.csv"
 }
-export -f run_test
+export -f run_test compared
 export OUT TIMEOUT GOBLINT SVCOMP_CONF SVCOMP_PROPERTY
 export SOLVER_LIST="${SOLVERS[*]}"
-export gobopt="${gobopt:-}"
+export gobopt="${gobopt:-}" DIFF="${DIFF:-}"
 
 printf "%s\n" "${TESTS[@]}" | xargs -P "$JOBS" -I {} bash -c 'run_test "$@"' _ {}
 
@@ -132,7 +155,9 @@ END {
   n = split(solvers, S, " ")
   printf "%-70s %6s %6s %9s %6s %6s %6s %6s\n", "pair (left vs right)", "tests", "failed", "identical", "left", "right", "incomp", "missing"
   for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++) {
-    pair = S[i] " vs " S[j]; order[++m] = pair
+    pair = S[i] " vs " S[j]
+    if (!(pair in total)) continue  # not compared (repeated runs of one solver)
+    order[++m] = pair
     printf "%-70s %6d %6d %9d %6d %6d %6d %6d\n", pair, total[pair], failed[pair], same[pair], left[pair], right[pair], incomparable[pair], missing[pair]
   }
   print ""

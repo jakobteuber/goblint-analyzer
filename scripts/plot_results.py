@@ -519,8 +519,9 @@ def plot_compare(csv, out, formats):
     solvers = solver_order(pd.unique(pd.concat([df["left"], df["right"]])))
     idx = {s: i for i, s in enumerate(solvers)}
     n = len(solvers)
-    better = np.zeros((n, n), dtype=int)  # [row, column]: tests on which row is strictly more precise than column
-    mixed = np.zeros((n, n), dtype=int)   # symmetric: tests on which both are more precise somewhere, incomparable or missing contexts
+    # NaN for pairs that were not compared (e.g. two random orders, see compare_solvers.sh).
+    better = np.full((n, n), np.nan)  # [row, column]: tests on which row is strictly more precise than column
+    mixed = np.full((n, n), np.nan)   # symmetric: tests on which both are more precise somewhere, incomparable or missing contexts
     for (left, right), g in ok.groupby(["left", "right"]):
         c = g["category"].value_counts()
         i, j = idx[left], idx[right]
@@ -530,8 +531,9 @@ def plot_compare(csv, out, formats):
     failed_tests = df[df["status"] != "ok"]["test"].nunique()
     print(f"{name}: {n} solvers, {n_tests} tests")
 
-    # The random orders (one per seed) are combined into one row and column: per cell the median over the seeds
-    # (or over the pairs of different seeds, on the diagonal), and the range from the fewest to the most tests.
+    # The random orders (one per seed) are combined into one row and column: per cell the median over the seeds,
+    # and the range from the fewest to the most tests. On the diagonal over the pairs of different seeds,
+    # if they were compared (older results; compare_solvers.sh no longer compares random orders with each other).
     seeds = [i for i, s in enumerate(solvers) if base_name(s) == "td_worklist_random" and s.partition("#")[2].isdigit()]
     groups = [[i] for i in range(n) if i not in seeds]
     labels = [solver_label(solvers[g[0]]) for g in groups]
@@ -550,7 +552,7 @@ def plot_compare(csv, out, formats):
         med, lo, hi = (np.full((k, k), np.nan) for _ in range(3))
         for a, ga in enumerate(groups):
             for b, gb in enumerate(groups):
-                v = [m[i, j] for i in ga for j in gb if i != j]
+                v = [m[i, j] for i in ga for j in gb if i != j and not np.isnan(m[i, j])]
                 if v:
                     med[a, b], lo[a, b], hi[a, b] = np.median(v), min(v), max(v)
         return med, lo, hi
@@ -592,9 +594,12 @@ def plot_compare(csv, out, formats):
     fig.tight_layout()
     random_note = ""
     if random_group is not None:
-        random_note = (f"random, {len(seeds)} seeds: median over the seeds and below it the range (fewest–most tests); "
-                       "on the diagonal over the pairs of different seeds, i.e. how much two random orders differ.\n")
-    footnote(axes[0], "A test counts if any unknown (global, or local per node or per context) differs. Empty cells: no such test.\n"
+        random_note = f"random, {len(seeds)} seeds: median over the seeds and below it the range (fewest–most tests).\n"
+        if not np.isnan(better[0][random_group, random_group]):  # better: (median, min, max) per cell
+            random_note = random_note[:-2] + ("; on the diagonal over the pairs of different seeds, "
+                                              "i.e. how much two random orders differ.\n")
+    footnote(axes[0], "A test counts if any unknown (global, or local per node or per context) differs. "
+             "Empty cells: no such test; gray: not compared.\n"
              + random_note +
              f"Tests: {n_tests}, of which {failed_tests} failed (error or timeout) and are not counted.\n" + data_note(csv))
     save(fig, out, f"{name}_precision-matrix", formats)

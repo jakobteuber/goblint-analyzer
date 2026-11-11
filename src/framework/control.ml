@@ -638,9 +638,17 @@ struct
           (solver, r)
         in
         let runs = (get_string "solver", (lh, gh)) :: List.map solve_with compare_solvers in
+        (* Repeated runs of one solver (name#label, e.g. the random orders td_worklist_random#1, #2, ...)
+           are not compared with each other, only with the other solvers. *)
+        let repeated_runs n1 n2 =
+          match String.split_on_char '#' n1, String.split_on_char '#' n2 with
+          | s1 :: _ :: _, s2 :: _ :: _ -> s1 = s2
+          | _ -> false
+        in
         let rec pairs = function
           | [] -> []
-          | x :: xs -> List.map (fun y -> (x, y)) xs @ pairs xs
+          | ((n1, _) as x) :: xs ->
+            List.filter_map (fun ((n2, _) as y) -> if repeated_runs n1 n2 then None else Some (x, y)) xs @ pairs xs
         in
         List.iter (fun ((n1, r1), (n2, r2)) -> CompareGlobSys.compare (n1, n2) r1 r2) (pairs runs)
       );
