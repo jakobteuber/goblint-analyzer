@@ -28,19 +28,33 @@ solver_args() {
   echo "$args"
 }
 
-# Sets the array TESTS from the arguments: regression test groups (default: all) or directories with SV-COMP tasks (*.yml).
+# Sets the array TESTS from the arguments: regression test groups (default: all), directories with SV-COMP tasks (*.yml),
+# other directories with C files (each *.c is a test with its PARAM line, e.g. concrat, see scripts/setup_concrat.sh),
+# or single files (*.c or *.yml).
 # Regression tests are discovered like update_suite.rb does: files NN-*.c, without SKIP (or kernel, if the headers are missing) in the first line.
 # Also writes a one-line description of the inputs to $OUT/dataset.txt, used as the dataset name in the plots.
 discover_tests() {
-  local groups=("$@") group f svcomp=() regression=()
+  local groups=("$@") group f svcomp=() regression=() cdirs=() single=0
   [ ${#groups[@]} -gt 0 ] || groups=($(ls "$ROOT/tests/regression"))
   TESTS=()
   for group in "${groups[@]}"; do
+    if [ -f "$group" ] && [[ $group == *.c || $group == *.yml ]]; then
+      TESTS+=("$(realpath "$group")")
+      single=$((single + 1))
+      continue
+    fi
     if [ -d "$group" ] && compgen -G "$group/*.yml" > /dev/null; then
       for f in "$group"/*.yml; do
         TESTS+=("$(realpath "$f")")
       done
       svcomp+=("$(basename "$group")")
+      continue
+    fi
+    if [ -d "$group" ] && compgen -G "$group/*.c" > /dev/null; then
+      for f in "$group"/*.c; do
+        TESTS+=("$(realpath "$f")")
+      done
+      cdirs+=("$(basename "$(realpath "$group")")")
       continue
     fi
     regression+=("$group")
@@ -57,6 +71,8 @@ discover_tests() {
     if [ $# -eq 0 ]; then desc="regression tests"; else desc="regression tests ${regression[*]}"; fi
   fi
   [ ${#svcomp[@]} -gt 0 ] && desc="${desc:+$desc, }SV-COMP ${svcomp[*]}"
+  [ ${#cdirs[@]} -gt 0 ] && desc="${desc:+$desc, }${cdirs[*]}"
+  [ $single -gt 0 ] && desc="${desc:+$desc, }$single single files"
   echo "$desc (${#TESTS[@]} tests)" > "$OUT/dataset.txt"
 }
 

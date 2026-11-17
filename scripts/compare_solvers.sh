@@ -9,11 +9,13 @@
 # its configuration enables the octagon domain, whose (Apron) values cannot be marshalled.
 # If one solver fails on a test (error, timeout), no pair of that test is compared.
 #
-# Usage: ./scripts/compare_solvers.sh [group | task-directory ...]
+# Usage: ./scripts/compare_solvers.sh [group | task-directory | c-directory | file ...]
 #   group:          regression test group directories to restrict to, e.g. 04-mutex (default: all of tests/regression)
 #   task-directory: a directory with SV-COMP task definitions (*.yml), e.g. sv-benchmarks/c/pthread,
 #                   see scripts/solver_work.sh for downloading them.
 #                   Each task is run with $SVCOMP_CONF, the task's data model and the property $SVCOMP_PROPERTY.
+#   c-directory:    a directory with C files, each analyzed with its PARAM line, e.g. concrat (see scripts/setup_concrat.sh)
+#   file:           a single C file (with its PARAM line) or SV-COMP task (*.yml)
 #
 # Environment variables:
 #   SOLVERS  solvers to compare, every pair is compared once (default: DEFAULT_SOLVERS in scripts/solver_lib.sh)

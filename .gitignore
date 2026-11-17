@@ -109,3 +109,5 @@ _coverage/*
 
 # SV-COMP benchmark programs (downloaded, see scripts/solver_work.sh)
 sv-benchmarks/
+# Concrat benchmark programs (downloaded, see scripts/setup_concrat.sh)
+concrat/

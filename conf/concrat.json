@@ -1,0 +1,83 @@
+{
+  "ana": {
+    "sv-comp": {
+      "functions": true
+    },
+    "int": {
+      "def_exc": true,
+      "enums": true,
+      "interval_set": true
+    },
+    "float": {
+      "interval": false,
+      "evaluate_math_functions": false
+    },
+    "activated": [
+      "base",
+      "threadid",
+      "threadflag",
+      "threadreturn",
+      "mallocWrapper",
+      "mutexEvents",
+      "mutex",
+      "access",
+      "race",
+      "escape",
+      "expRelation",
+      "mhp",
+      "assert",
+      "symb_locks",
+      "region",
+      "thread",
+      "threadJoins",
+      "abortUnless"
+    ],
+    "path_sens": [
+      "mutex",
+      "malloc_null",
+      "uninit",
+      "expsplit",
+      "activeSetjmp",
+      "memLeak",
+      "threadflag"
+    ],
+    "base": {
+      "arrays": {
+        "domain": "unroll",
+        "unrolling-factor": 32
+      },
+      "privatization": "write+lock-tid"
+    },
+    "race": {
+      "free": false,
+      "call": false
+    },
+    "opt": {
+      "hashcons": false
+    },
+    "autotune": {
+      "enabled": true,
+      "activated": [
+        "loopUnrollHeuristic"
+      ]
+    },
+    "demand-function": false
+  },
+  "exp": {
+    "region-offsets": true
+  },
+  "sem": {
+    "unknown_function": {
+      "spawn": false
+    },
+    "int": {
+      "signed_overflow": "assume_none"
+    },
+    "null-pointer": {
+      "dereference": "assume_none"
+    }
+  },
+  "warn": {
+    "deterministic": true
+  }
+}

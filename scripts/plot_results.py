@@ -48,7 +48,7 @@ RANDOM = "td_worklist_random"
 # (FIFO and LIFO are the two directions of insertion order), so a panel never has more than three hues.
 # td_simplified_ref has a panel of its own: it has no work list and is unrelated to the heuristics.
 # Colors therefore mark the role in a panel, not the solver: the first-named direction is blue, its opposite orange
-# (also dotted with triangles, so that the direction does not depend on color alone), a third solver aqua.
+# (with triangles in the scatter plots, so that the direction does not depend on color alone), a third solver aqua.
 # The random orders are a neutral band (from their best to their worst run) behind every panel, and the baseline is
 # the reference line at 1 (or the x axis), so that every panel is read against the same references.
 PANELS = [
@@ -66,6 +66,18 @@ OPPOSITES = {members[1] for _, members in PANELS if len(members) > 1}
 # Plot order: the panels in order, the random orders after the reference solvers (insertion order, no work list).
 ORDER = PANELS[0][1] + PANELS[1][1] + [RANDOM] + [s for _, members in PANELS[2:] for s in members]
 RANDOM_BAND = "#e1e0d9"  # neutral, behind the series
+# Order of the precision matrix: the solvers fall into two groups by precision (SV-COMP, compare_svcomp_late):
+# the order in which new roots run first decides the precision, and that is the tie-breaking order for roots that
+# have not run yet (LIFO in ByKey, FIFO in ByDestabilizations and ByLastRun).
+# Within a group, the solvers closest to the group's namesake come first. Solvers in no group come last.
+PRECISION_GROUPS = [
+    ("FIFO-like", ["td_worklist_fifo", "td_worklist_least_recently_fired", "td_worklist_destabilizers_first",
+                   "td_worklist_destabilizers_last", "td_worklist_most_recently_fired"]),
+    ("LIFO-like", ["td_worklist_lifo", "td_worklist_most_invalidated", "td_worklist_shallowest_created",
+                   "td_worklist_costliest_first", "td_worklist_least_invalidated", "td_worklist_cheapest_first",
+                   "td_worklist_deepest_created"]),
+    ("other", ["td_simplified_ref", RANDOM]),
+]
 # Short names for the plots.
 SOLVER_LABELS = {
     "td_simplified_ref": "simplified_ref (no work list)",
@@ -173,10 +185,10 @@ def solver_label(solver, runs=None):
 
 def solver_style(solver):
     """Line style, marker and marker fill: the best of repeated runs solid and filled, the worst dashed and hollow;
-    opposite variants (sharing the color of their heuristic) dotted, with triangles."""
+    opposite variants with triangles."""
     worst = solver.endswith("#worst")
     opposite = base_name(solver) in OPPOSITES
-    return {"linestyle": "--" if worst else ":" if opposite else "-", "marker": "^" if opposite else "o", "filled": not worst}
+    return {"linestyle": "--" if worst else "-", "marker": "^" if opposite else "o", "filled": not worst}
 
 
 def solver_order(solvers):
@@ -299,7 +311,7 @@ def plot_work(csv, out, formats):
         band = (ratios[f"{RANDOM}#best"], ratios[f"{RANDOM}#worst"], f"random, best–worst of {runs.get(RANDOM, '?')}")
     grid = panels(others)
     pairs_note = ("Colors mark the direction within a panel, not the heuristic: blue the first-named, "
-                  "orange (dotted lines, triangles) the opposite.\n")
+                  "orange (triangles) the opposite.\n")
 
     # 1. Distribution of the per-test ratios: how often and by how much each solver does more or less work.
     plot_ratio_cdf(ratios, grid, band, base_label, metric_label, label,
@@ -558,6 +570,19 @@ def plot_compare(csv, out, formats):
         return med, lo, hi
 
     better, mixed = collapse(better), collapse(mixed)
+
+    # Reorder by PRECISION_GROUPS, so that the groups are next to each other.
+    def precision_rank(g):
+        solver = base_name(solvers[groups[g][0]])
+        for gi, (_, members) in enumerate(PRECISION_GROUPS):
+            if solver in members:
+                return gi, members.index(solver)
+        return len(PRECISION_GROUPS), g
+    perm = sorted(range(len(groups)), key=precision_rank)
+    better, mixed = (tuple(a[np.ix_(perm, perm)] for a in m) for m in (better, mixed))
+    labels = [labels[a] for a in perm]
+    if random_group is not None:
+        random_group = perm.index(random_group)
     n = len(groups)
     vmax = max(1, np.nanmax(better[0]), np.nanmax(mixed[0]))
     cmap = LinearSegmentedColormap.from_list("blues", SEQUENTIAL)
@@ -572,7 +597,7 @@ def plot_compare(csv, out, formats):
             for j in range(n):
                 if np.isnan(m[i, j]):
                     ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, color=GRID, linewidth=0))
-                elif hi[i, j] > 0:
+                else:
                     dark = m[i, j] > 0.45 * vmax
                     text = f"{m[i, j]:g}"
                     if lo[i, j] != hi[i, j]:
@@ -599,7 +624,7 @@ def plot_compare(csv, out, formats):
             random_note = random_note[:-2] + ("; on the diagonal over the pairs of different seeds, "
                                               "i.e. how much two random orders differ.\n")
     footnote(axes[0], "A test counts if any unknown (global, or local per node or per context) differs. "
-             "Empty cells: no such test; gray: not compared.\n"
+             "Gray: not compared. Order: solvers with FIFO-like precision, then with LIFO-like precision.\n"
              + random_note +
              f"Tests: {n_tests}, of which {failed_tests} failed (error or timeout) and are not counted.\n" + data_note(csv))
     save(fig, out, f"{name}_precision-matrix", formats)

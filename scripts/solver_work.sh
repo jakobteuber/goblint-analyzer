@@ -5,7 +5,7 @@
 # Right-hand side evaluations are the most comparable between solvers: td_simplified_ref also calls iterate on stable unknowns,
 # where it returns immediately, while the other solvers only iterate unstable ones.
 #
-# Usage: ./scripts/solver_work.sh [group | task-directory ...]
+# Usage: ./scripts/solver_work.sh [group | task-directory | c-directory | file ...]
 #   group:          regression test group directories to restrict to, e.g. 04-mutex (default: all of tests/regression)
 #   task-directory: a directory with SV-COMP task definitions (*.yml), e.g. sv-benchmarks/c/pthread.
 #                   Each task is run with $SVCOMP_CONF, the task's data model and the property $SVCOMP_PROPERTY.
@@ -16,6 +16,8 @@
 #                       c/pthread-wmm c/pthread-lit c/ldv-races c/ldv-linux-3.14-races c/pthread-complex \
 #                       c/pthread-driver-races c/pthread-C-DAC c/pthread-divine c/pthread-nondet c/goblint-regression \
 #                       c/weaver c/pthread-deagle
+#   c-directory:    a directory with C files, each analyzed with its PARAM line, e.g. concrat (see scripts/setup_concrat.sh)
+#   file:           a single C file (with its PARAM line) or SV-COMP task (*.yml)
 #
 # Environment variables:
 #   SOLVERS  solvers to run (from those above), the first one is the baseline of the report
